@@ -25,6 +25,7 @@ import yaml
 from app.core.config import Settings
 from app.core.database import create_database
 from app.domains.identity.service import resolve_identity
+from app.integrations.keycloak.oidc import OIDCVerifier
 from app.main import create_app
 from scripts import setup
 from scripts.ci import preflight
@@ -95,7 +96,19 @@ def stack(tmp_path_factory):
             "serviceAccountsEnabled": True,
             "standardFlowEnabled": False,
             "directAccessGrantsEnabled": False,
-            "protocolMappers": copy.deepcopy(realm["clients"][1]["protocolMappers"]),
+            # Do not inherit realm defaults: the built-in ACR mapper races with
+            # test-acr at the same priority. Keep exactly one writer per claim.
+            "defaultClientScopes": [],
+            "optionalClientScopes": [],
+            "protocolMappers": [
+                *copy.deepcopy(realm["clients"][1]["protocolMappers"]),
+                {
+                    "name": "test-subject",
+                    "protocol": "openid-connect",
+                    "protocolMapper": "oidc-sub-mapper",
+                    "config": {"access.token.claim": "true"},
+                },
+            ],
         }
     )
     # Test-only identities and authentication context, not a production MFA flow.
@@ -335,6 +348,28 @@ def test_discovery_jwks_and_engine_mount_options(stack):
     assert "noexec" in live_mounts and "nosuid" in live_mounts and "size=65536k" in live_mounts
 
 
+async def test_isolated_realm_authentication_context_is_consistent_for_every_principal(stack):
+    config = Settings(
+        environment="development",
+        keycloak_mode="external",
+        public_url=stack["config"]["PUBLIC_URL"],
+        oidc_issuer=stack["issuer"],
+        db_password=stack["config"]["DB_PASSWORD"],
+    )
+    subjects = set()
+    async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
+        verifier = OIDCVerifier(config, client)
+        for label in ("alice", "bob", "carol", "admin", "machine", "dave"):
+            # Verify the real signature, issuer, audience and expiry, not just
+            # decode an unverified JWT or inspect the realm import JSON.
+            claims = await verifier.verify(token(stack, "integration-" + label))
+            assert claims.get("acr") == "test-step-up", f"Unexpected test ACR for {label}"
+            assert type(claims.get("auth_time")) is int
+            assert 0 <= time.time() - claims["auth_time"] <= 900
+            assert claims["sub"] not in subjects
+            subjects.add(claims["sub"])
+
+
 async def test_external_mode_with_real_provider_and_concurrent_identity_provisioning(stack):
     config = Settings(
         environment="development",
@@ -440,6 +475,25 @@ def sql_connection(stack):
         user="core_app",
         password=stack["config"]["DB_PASSWORD"],
     )
+
+
+@pytest.fixture
+def restore_platform_admin_state(actors, stack):
+    # This test intentionally revokes its own bootstrap administrator. Restore
+    # the disposable DB even when an assertion fails, so later tests can report
+    # their own failures rather than a cascading platform_admin_required error.
+    with sql_connection(stack) as db:
+        initial = [row[0] for row in db.execute("SELECT user_id FROM platform_admins WHERE active")]
+    assert initial
+    try:
+        yield
+    finally:
+        with sql_connection(stack) as db:
+            db.execute("SELECT id FROM platform_settings WHERE id=1 FOR UPDATE")
+            db.execute("UPDATE platform_admins SET active=true WHERE user_id=ANY(%s)", (initial,))
+            db.execute(
+                "UPDATE platform_admins SET active=false WHERE user_id<>ALL(%s) AND active", (initial,)
+            )
 
 
 def test_sprint2_preserves_legacy_identity_and_safe_defaults(stack):
@@ -873,7 +927,9 @@ def test_sprint2_last_admin_database_backstops_and_append_only_audit(actors, sta
     assert response.status_code == 200 and response.json()["total"] > 0
 
 
-def test_sprint2_concurrent_ownership_transfers_and_admin_revocations(actors, stack):
+def test_sprint2_concurrent_ownership_transfers_and_admin_revocations(
+    actors, stack, restore_platform_admin_state
+):
     from concurrent.futures import ThreadPoolExecutor
 
     call = actors["request"]
@@ -912,6 +968,10 @@ def test_sprint2_concurrent_ownership_transfers_and_admin_revocations(actors, st
     assert sorted(item.status_code for item in values) == [200, 403]
     admin_ids = {label: actors["identities"][label]["user_id"] for label in ("admin", "bob")}
     assert call("admin", "POST", "/platform/admins", json={"user_id": admin_ids["bob"]}).status_code == 201
+    # Both participants must pass platform authorization/MFA before the race.
+    for label in admin_ids:
+        response = call(label, "GET", "/platform/settings")
+        assert response.status_code == 200, (label, response.status_code, response.json().get("detail"))
     with ThreadPoolExecutor(2) as pool:
         values = list(
             pool.map(
@@ -919,7 +979,13 @@ def test_sprint2_concurrent_ownership_transfers_and_admin_revocations(actors, st
                 ("admin", "bob"),
             )
         )
-    assert sorted(item.status_code for _, item in values) == [200, 409]
+    assert sorted(item.status_code for _, item in values) == [200, 409], [
+        (label, item.status_code, item.json().get("detail")) for label, item in values
+    ]
+    rejected = next(item for _, item in values if item.status_code == 409)
+    assert rejected.json() == {"detail": {"code": "last_platform_admin"}}
+    with sql_connection(stack) as db:
+        assert db.execute("SELECT count(*) FROM platform_admins WHERE active").fetchone() == (1,)
     survivor = next(label for label, item in values if item.status_code == 409)
     assert call(survivor, "POST", "/platform/admins", json={"user_id": admin_ids["admin"]}).status_code == 201
     assert call("admin", "DELETE", f"/platform/admins/{admin_ids['bob']}").status_code == 200

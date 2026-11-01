@@ -123,6 +123,18 @@ Fixture cleanup удаляет **только свой случайный projec
 
 `reports/integration-diagnostics.json` при ошибке содержит только Service/State/Health/ExitCode. Raw `.env`, JWT, passwords, Docker Env и realm secrets не сохраняются как artifacts. Для расширенной локальной диагностики используйте собственную изолированную среду и не публикуйте секреты.
 
+### Нестабильный MFA-контекст тестового realm (Sprint 2)
+
+В job №117 на `1364d43` rootless DinD и Compose успешно запустились, но тест параллельного снятия Platform Admin получил `[200, 403]` вместо `[200, 409]`. Это не ошибка Runner или PostgreSQL locking. Тестовые clients не задавали `defaultClientScopes`, поэтому наследовали realm scope `acr`: его встроенный mapper и тестовый `test-acr` записывали один claim с одинаковым приоритетом. На новых стендах воспроизведён подписанный токен с `acr=1` вместо `test-step-up`; Core корректно отказывал в административном доступе. Порядок обработки mapper'ов не был надёжным контрактом. См. исходники закреплённой версии Keycloak: [создание default scopes](https://github.com/keycloak/keycloak/blob/26.8.1/services/src/main/java/org/keycloak/protocol/oidc/OIDCLoginProtocolFactory.java) и [сортировка mapper'ов](https://github.com/keycloak/keycloak/blob/26.8.1/services/src/main/java/org/keycloak/protocol/ProtocolMapperUtils.java).
+
+Теперь только disposable integration clients имеют явные пустые default/optional scopes и собственный `oidc-sub-mapper`: обязательный `sub` сохраняется без наследования конкурирующих ACR/auth_time mapper'ов. Production realm, MFA allowlist и серверные проверки не изменены. Новый regression проверяет подпись, issuer, audience, expiry, уникальность subject и тестовый authentication context всех шести участников; unit-тест отдельно сохраняет отказ для обычного `acr=1` со свежим `auth_time`.
+
+Перед гонкой оба администратора должны успешно пройти защищённый API. После неё проверяются ровно `409 last_platform_admin` и один оставшийся active admin. Error diagnostics выводят только label/status/domain code, не JWT. Тестовая fixture восстанавливает исходные admin flags под DB lock даже при assertion failure: раньше сбой до восстановления bootstrap admin вызывал вторичный `403` в следующем, не связанном с MFA тесте rollback. Это cleanup только собственной одноразовой БД; он выполняется после проверок и не превращает ошибку теста в успех.
+
+После отправки исправления нужен pipeline **нового commit SHA**. Retry старого job снова использует старый код; удаление dev/production volumes или изменение Runner для этого исправления не требуется.
+
+Локальная проверка исправления 02.11.2026: `make check` — успешно, **230 unit/API tests**, coverage **82.39%**, Ruff/format/MyPy/shell/Bandit/оба pip-audit и три Compose-конфигурации без ошибок; `make integration-test` — **17 passed** на реальных PostgreSQL/Keycloak. Проверки authentication context, admin race и deferred rollback дополнительно прошли **два отдельных запуска по 3 теста** с новыми realm/volumes. Gitleaks Git history/working tree и `git diff --check` — без замечаний. Host: macOS/Python 3.12.14, сервисы — Docker Desktop/Linux arm64. Новый GitLab pipeline с исправлением пока не запускался; результат Linux amd64 Runner не заявляется.
+
 ## Coverage и отчёты
 
 Unit и integration запускаются отдельно. Unit job сохраняет `reports/unit.xml` и `reports/coverage.xml`; integration — отдельный JUnit. `coverage` regexp и Cobertura report формируются из одного прогона. Это обеспечивает процент в MR widget и построчные annotations при поддерживаемой версии GitLab; [эти механизмы конфигурируются отдельно](https://docs.gitlab.com/ci/testing/code_coverage/).

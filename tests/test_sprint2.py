@@ -110,6 +110,7 @@ def test_suspended_user_fails_even_with_a_verified_jwt(ctx):
     [
         {},
         {"acr": "test-step-up"},
+        {"acr": "1", "auth_time": time.time()},
         {"acr": "bogus", "auth_time": 0},
         {"acr": "test-step-up", "auth_time": True},
         {"acr": "test-step-up", "auth_time": float("nan")},
