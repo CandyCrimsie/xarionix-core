@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "xarionix-core"
+version = "0.1.0"
+description = "Independent Xarionix platform core"
+requires-python = ">=3.12,<3.16"
+dependencies = [
+  "fastapi>=0.121,<1", "uvicorn>=0.38,<1", "sqlalchemy[asyncio]>=2.0.44,<2.1",
+  "psycopg[binary]>=3.2.12,<4", "alembic>=1.17,<2", "pydantic-settings>=2.11,<3",
+  "httpx>=0.28,<0.29", "PyJWT[crypto]>=2.15,<3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.4,<10", "pytest-asyncio>=1.2,<2", "ruff>=0.14,<1", "mypy>=1.18,<2", "pip-audit>=2.9,<3", "bandit[toml]>=1.8,<2", "types-PyYAML>=6,<7", "PyYAML>=6,<7"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app", "scripts"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+markers = ["integration: requires real PostgreSQL / managed Keycloak"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+ignore = ["E501", "B008"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv"]

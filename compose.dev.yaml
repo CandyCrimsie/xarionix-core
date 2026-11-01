@@ -1,0 +1,108 @@
+# EXPLICIT local-only HTTP deployment; never loaded by install.sh.
+name: xarionix-core-dev
+x-app: &app
+  image: xarionix-core:0.1.0
+  build: .
+  user: "10001:10001"
+  environment: &environment
+    XARIONIX_ENVIRONMENT: development
+    XARIONIX_INSTALL_LANGUAGE: ${XARIONIX_INSTALL_LANGUAGE:?}
+    XARIONIX_KEYCLOAK_MODE: managed
+    XARIONIX_PUBLIC_URL: http://localhost:8000
+    XARIONIX_OIDC_ISSUER: http://localhost:8090/realms/xarionix
+    XARIONIX_OIDC_BACKCHANNEL: http://keycloak:8080/realms/xarionix
+    XARIONIX_OIDC_AUDIENCE: xarionix-core
+    XARIONIX_DOCS_ENABLED: "true"
+    XARIONIX_DB_PASSWORD: ${XARIONIX_DB_PASSWORD:?}
+    XARIONIX_DB_HOST: postgres
+    XARIONIX_DB_USER: core_app
+    XARIONIX_DB_NAME: xarionix_core
+  read_only: true
+  tmpfs: [/tmp:rw,noexec,nosuid,size=64m]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+services:
+  postgres:
+    image: ${XARIONIX_POSTGRES_IMAGE:-postgres:18.6-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5}
+    environment:
+      POSTGRES_USER: core_bootstrap
+      POSTGRES_DB: xarionix_core
+      POSTGRES_PASSWORD: ${XARIONIX_DB_BOOTSTRAP_PASSWORD:?}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+      APP_USER: core_app
+      APP_PASSWORD: ${XARIONIX_DB_PASSWORD:?}
+    volumes:
+      - dev_core_database:/var/lib/postgresql
+      - ./deploy/postgres/10-app-user.sh:/docker-entrypoint-initdb.d/10-app-user.sh:ro
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+  migrate:
+    <<: *app
+    command: [alembic, upgrade, head]
+    depends_on:
+      postgres: {condition: service_healthy}
+  core:
+    <<: *app
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      keycloak: {condition: service_healthy}
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=12)"]
+      interval: 15s
+      timeout: 14s
+      retries: 10
+  keycloak-postgres:
+    image: ${XARIONIX_POSTGRES_IMAGE:-postgres:18.6-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5}
+    environment:
+      POSTGRES_USER: keycloak_bootstrap
+      POSTGRES_DB: keycloak
+      POSTGRES_PASSWORD: ${XARIONIX_KC_DB_BOOTSTRAP_PASSWORD:?}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+      APP_USER: keycloak_app
+      APP_PASSWORD: ${XARIONIX_KC_DB_PASSWORD:?}
+    volumes:
+      - dev_keycloak_database:/var/lib/postgresql
+      - ./deploy/postgres/10-app-user.sh:/docker-entrypoint-initdb.d/10-app-user.sh:ro
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+  keycloak:
+    image: ${XARIONIX_KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.8.1@sha256:3f3c5f8e03c614774b4bd9173b88391fefa4153bfc010d8012d59ad825377332}
+    command: [start, --import-realm]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak_app
+      KC_DB_PASSWORD: ${XARIONIX_KC_DB_PASSWORD:?}
+      KC_BOOTSTRAP_ADMIN_USERNAME: bootstrap-admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${XARIONIX_KC_ADMIN_PASSWORD:?}
+      KC_HOSTNAME: http://localhost:8090
+      KC_HOSTNAME_STRICT: "true"
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+    ports: ["127.0.0.1:8090:8080"]
+    volumes:
+      - ./deploy/generated/dev-realm.json:/opt/keycloak/data/import/xarionix-realm.json:ro
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      keycloak-postgres: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, /bin/bash, -ec, "{ printf 'GET /health/ready HTTP/1.0\r\nHost: localhost\r\n\r\n' >&0; grep -q '200 OK'; } 0<>/dev/tcp/127.0.0.1/9000"]
+      interval: 10s
+      timeout: 5s
+      retries: 40
+      start_period: 60s
+    restart: unless-stopped
+volumes:
+  dev_core_database:
+  dev_keycloak_database:
