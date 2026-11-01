@@ -1,5 +1,7 @@
 # Sprint 1.1 — реализация и проверка
 
+Исторический отчёт первого прогона. Актуальный Docker-executor contract и дополнительные проверки после job `validate:compose` — в [ci-cd.md](ci-cd.md) и [docker-executor.md](docker-executor.md). Числа ниже относятся к первому прогону.
+
 Дата: 01.11.2026. Изменения выполнены только в `xarionix-core`, без commit/push, публикации образов или production deployment.
 
 ## Исправленные причины ошибок

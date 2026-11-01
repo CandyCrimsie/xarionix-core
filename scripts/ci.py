@@ -31,11 +31,9 @@ def preflight() -> None:
         docker(["compose", "version"], timeout=20)
     except RuntimeError:
         raise RuntimeError(
-            "Docker CLI/daemon or Compose unavailable: this job requires the dedicated Docker-capable runner (docs/ci-cd.md)"
+            "Docker CLI/daemon or Compose unavailable: use a working local daemon or the rootless Docker-executor setup (docs/ci-cd.md)"
         ) from None
-    print(
-        "Docker daemon and Compose available. Docker jobs require the dedicated runner documented in docs/ci-cd.md"
-    )
+    print("Docker daemon and Compose available (local or isolated rootless CI)")
 
 
 def metadata() -> dict[str, str]:

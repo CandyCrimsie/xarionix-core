@@ -42,6 +42,8 @@ def tracked_files() -> list[str]:
 def check() -> None:
     required = [
         "Dockerfile",
+        "deploy/ci/Dockerfile",
+        "scripts/docker_job.py",
         "compose.yaml",
         "compose.dev.yaml",
         "compose.keycloak.yaml",

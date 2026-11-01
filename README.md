@@ -78,7 +78,7 @@ make security
 XARIONIX_RUN_DOCKER_TESTS=1 .venv/bin/pytest tests/integration -vv
 ```
 
-`make test` запускает unit/API/regression отдельно от integration и сохраняет JUnit/Cobertura в `reports/`. Полный локальный набор: `make check`, `make integration-test`, `make docker-build`, `make docker-scan`. GitLab использует 7 обязательных стадий; Docker jobs требуют специально настроенного runner. GitLab Pipeline badge не добавлен: публичный web URL GitLab из текущего SSH remote неизвестен, URL не выдумывается.
+`make test` запускает unit/API/regression отдельно от integration и сохраняет JUnit/Cobertura в `reports/`. Полный локальный набор: `make check`, `make integration-test`, `make docker-build`, `make docker-scan`. GitLab использует 7 обязательных стадий. Как ERP/Web, Core работает на существующем group Docker executor; для Docker-проверок используется tag `debian` и отдельный rootless DinD service с TLS. Privileged разрешён только точному закреплённому service image; job не получает Docker socket VM. Настройка и ограничения — в [CI/CD](docs/ci-cd.md), результаты исправления — в [Docker executor](docs/docker-executor.md). Копировать checkout на сервер Runner вручную не требуется: это делает GitLab.
 
 `requirements.lock` фиксирует runtime, `requirements-dev.lock` — инструменты и тесты. `make security` проверяет оба lock-файла через `pip-audit --strict`; `make docker-scan` проверяет Core image через Trivy. Runtime закреплён на Alpine, установочные инструменты из него удалены. Обновление версий и digests — только осознанное, с повторными проверками.
 

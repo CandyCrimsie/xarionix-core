@@ -36,34 +36,59 @@ Linux Docker executor без privileged mode, закреплённый Python im
 
 ### Docker jobs
 
-По умолчанию используется **выделенный Linux shell executor** с tag `xarionix-docker`:
+Используется существующий **Linux Docker executor**, как у ERP/Web, с реально зарегистрированным tag `debian`. Раньше Core требовал отсутствующие `xarionix-docker` / `xarionix-release`: job не назначался Runner, поэтому не имел trace. Ручная загрузка репозитория на VM не нужна. Если у другой установки иной tag, согласованно измените `tags` в `.docker` и регистрацию Runner.
 
-- Python 3.12+, venv/pip, Git, Make, OpenSSL;
-- Docker Engine с BuildKit, Compose **2.24+**;
-- локальный Docker daemon с bind-mount paths, доступными из shell job;
-- loopback ports для ephemeral integration containers; доступ к public image registries и Trivy vulnerability DB;
-- достаточно места/памяти: ориентир 4 vCPU, 8 GB RAM, 20+ GB свободного диска для test stack, build и scanner;
-- право GitLab Runner user обращаться к daemon.
+Каждый Docker job получает собственный `docker:29.9.2-dind-rootless`, закреплённый по digest в `.gitlab-ci.yml`. CLI также закреплён. Соединение job → service использует **проверяемый TLS на 2376**, клиентские сертификаты в `/certs/client` и отдельную job network (`FF_NETWORK_PER_BUILD=1`). Plaintext 2375 и физический Docker socket VM не используются. Preflight проверяет TLS-файлы, Compose и `name=rootless` в SecurityOptions daemon. Отсутствие сервисного daemon завершает job ошибкой с объяснением, а не skip.
 
-Вступление в Docker group эквивалентно root-доступу к хосту. Поэтому runner должен быть project-scoped/locked, **изолированным и желательно ephemeral VM на job**, без чужих проектов, production volumes/credentials, SSH keys и общих writable caches. MR-код нельзя выполнять на рабочем сервере. После job VM уничтожается инфраструктурой runner, а не `docker system prune`.
+В соответствующем `[runners.docker]` необходимы:
 
-Тег `xarionix-release` назначается **отдельному protected runner**, допускающему только protected refs. На protected version tag workflow перенаправляет туда все Docker jobs, включая integration/security/build; publish всегда требует этот tag. Не используйте один и тот же persistent Docker daemon для недоверенных MR и release. Не предоставляйте protected runner недоверенным fork MR; отключите передачу protected variables/runners в такие pipelines.
+```toml
+privileged = false
+services_privileged = true
+allowed_privileged_services = [
+  "docker:29.9.2-dind-rootless@sha256:ae083cc7de51e7a8e5a597f8fb774ca7914c408a95fc0f1477826a913479518a",
+  "docker.io/library/docker:29.9.2-dind-rootless@sha256:ae083cc7de51e7a8e5a597f8fb774ca7914c408a95fc0f1477826a913479518a",
+]
+volumes = ["/cache", "/certs/client"]
+```
 
-Обычный GitLab runner **не считается автоматически Docker-capable**. Если runner с нужным tag не зарегистрирован/недоступен, GitLab покажет job pending/stuck с требованием tag; это не успешный тест. Если runner выбран, но Docker CLI/daemon недоступен, preflight завершится явной ошибкой. Нельзя заменить такой job `when: never` или `allow_failure` ради зелёного pipeline.
+Не добавляйте wildcard в allowlist, `privileged=true`, `seccomp=unconfined` или `/var/run/docker.sock` в job volumes. Сам существующий Runner container может использовать socket VM для управления executor: это **не** разрешение передать его job. Обычные Python/ERP/Web jobs не становятся privileged. Риск выхода privileged service на хост полностью не исчезает даже при rootless: Runner не должен находиться на production-сервере или содержать production secrets. Политика соответствует [restricted rootless DinD GitLab Runner](https://docs.gitlab.com/runner/executors/docker/#use-rootless-docker-in-docker-with-restricted-privileged-mode).
 
-Базовая поставка **не включает privileged DinD**. Привязка host Docker socket к Docker executor также не является безвредной заменой shell runner и не настроена автоматически. Remote DinD требует отдельного решения для host paths и loopback/network access; текущий integration runner contract — локальный daemon/shared filesystem. [GitLab описывает различия executor/DinD/socket binding и их риски](https://docs.gitlab.com/ci/docker/using_docker_build/).
+Для проверяемого применения есть standalone-скрипт, не выводящий token/config:
+
+```bash
+sudo python3 scripts/configure_docker_runner.py --path /srv/gitlab-runner/config/config.toml
+# По умолчанию только проверка. Применение — отдельное явное действие:
+sudo python3 scripts/configure_docker_runner.py --path /srv/gitlab-runner/config/config.toml --apply
+```
+
+Путь зависит от установки Runner. При нескольких регистрациях передайте `--runner-name`. Скрипт отказывается менять небезопасный/неоднозначный config, сохраняет остальные поля, создаёт private backup и атомарно записывает файл 0600. Повторный запуск идемпотентен. GitLab Runner перечитывает config без перезапуска. Не прикладывайте config или backup к issue/artifacts: там authentication token. При откате восстановите только проверенную private копию конкретного config; volumes/DB не удаляются.
+
+### Workspace, права и сеть внутри rootless service
+
+Обычный Compose bind mount смотрит на filesystem **daemon**, не job. Поэтому просто добавить DinD недостаточно: файлы realm/TLS и `localhost` интеграционных тестов оказались бы в другом контейнере. `scripts/docker_job.py` решает это без доступа к VM:
+
+1. Собирает закреплённый toolbox (`deploy/ci/Dockerfile`) с CLI/Compose, Python и locked test tools. Это не публикуемый production image.
+2. Передаёт tracked и неигнорируемые исходники в одноразовый named volume rootless daemon. Приватные `.env`, ключи, venv, artifacts и clone credentials исключены; Git history передаётся без `.git/config`/reflogs. Symlinks и выход за checkout запрещены.
+3. Запускает непривилегированный controller внутри этого daemon; volume смонтирован по его daemon-side absolute path. Поэтому последующие bind mounts видят те же файлы и UID, включая read-only TLS key 0600 и Nginx UID. Pytest temporary files также находятся внутри volume (`--basetemp=.ci-tmp/pytest`), не в чужом `/tmp`.
+4. Controller использует socket **только rootless service** `/run/user/1000/docker.sock` и `--network host` **только внутри DinD namespace**. Это не socket и не host network физической VM; `localhost` остаётся внутри данного job. Внешнее соединение по TCP остаётся с TLS.
+5. Возвращает только allowlisted regular artifacts (`reports`/`dist`), запрещает links/path traversal и удаляет собственный controller/volume. Job teardown уничтожает отдельный DinD service. Нет global prune.
+
+Нужны Linux user namespaces, совместимый Docker executor, BuildKit/Compose, доступ к OS/PyPI/image registries и Trivy DB. Ориентир для полного стека — 4 vCPU, 8 GB RAM, 20+ GB свободного диска. Текущий Runner меньше; при нехватке ресурсов расширяйте VM, а не пропускайте integration. Его `concurrent=1` также предотвращает конкуренцию за persistent client cert volume. Не увеличивайте concurrency без отдельной проверки изоляции certificates/cache между jobs. Rootless DinD может не иметь cgroup delegation: лимиты всего service задаются на executor, на внутренние per-container limits полагаться нельзя.
+
+Release также получает **новый изолированный DinD daemon**, а не общий persistent build daemon. Это не отдельная release VM и не полная граница против выхода на Runner-хост. Для недоверенных fork MR предпочтительны отдельные ephemeral VM и отдельный protected release runner; production credentials не передаются. Не предоставляйте protected variables/runners недоверенному MR.
 
 ### GitLab settings
 
 1. Включить Container Registry и проверить, что стандартные `CI_REGISTRY_*` доступны publish job.
-2. Зарегистрировать обычные Python runners и отдельные Docker/release runners с указанными tags; запретить untagged jobs для выделенных runners.
+2. Включить существующий group Docker runner для Core; разрешить обычные untagged Python jobs и tag `debian` для Docker jobs, применить restricted rootless service config выше. Не регистрировать фиктивные Shell tags.
 3. Защитить default branch и release Git tags; право создавать version tags — только ответственным за release.
 4. Настроить server-side protection/immutability для release container tags. Одного условия в YAML недостаточно против MR, меняющего собственный pipeline: job token может иметь registry scope текущего проекта.
 5. Не создавать production secrets в обычных CI variables. Публикация использует временные стандартные job credentials, не PAT. Если добавляются секреты позже — только protected/masked/file variables с минимальным scope.
 6. Разрешить достаточно большие job artifacts: image tar может превышать стандартный лимит 100 MB; практический лимит 1 GiB. Build artifacts ограничены developer access и удаляются через день.
 7. Включить требование успешного pipeline для merge. Не трактовать pending integration как успешный gate.
 
-Точный публичный HTTP URL текущего GitLab из SSH remote определить нельзя, поэтому Pipeline badge **не выдуман**. После проверки project web URL добавьте badge штатным механизмом GitLab. `CI_PROJECT_URL` внутри настоящего pipeline заполнит OCI source автоматически.
+Текущий GitLab доступен по внутреннему NetBird hostname; публичный badge не добавляется. Pipeline использует стандартный `CI_PROJECT_URL`, без хардкодного внутреннего URL в OCI metadata.
 
 ## Variables и credentials
 
@@ -79,7 +104,8 @@ Linux Docker executor без privileged mode, закреплённый Python im
 | `CI_JOB_ID` / `CI_PIPELINE_ID` | Изоляция ресурсов и cleanup только своего job |
 | `GIT_DEPTH=0` | Полная доступная история для secret scan |
 | `XARIONIX_RUN_DOCKER_TESTS=1` | Обязательное включение integration fixture в integration job |
-| `XARIONIX_DOCKER_RUNNER_TAG` | Runner selector; protected release workflow выбирает protected runner |
+| `DOCKER_HOST` / `DOCKER_TLS_VERIFY` / `DOCKER_CERT_PATH` | Закреплённый TLS endpoint rootless DinD; не переопределять на VM socket или plaintext |
+| `FF_NETWORK_PER_BUILD=1` | Отдельная executor network для каждого Docker job |
 
 Registry password не передаётся аргументом команды и не печатается. Docker auth config создаётся в private temporary directory, удаляется после publish и не попадает в artifacts/cache. Не включайте shell tracing, `CI_DEBUG_TRACE`, вывод `env`, `docker inspect` целиком или production `docker compose config` в логи.
 
@@ -93,7 +119,7 @@ make integration-test
 
 Compose project `xarionix-test-<pipeline>-<job>-<random>` имеет собственные volumes, networks, loopback ports, случайные credentials и отдельный test-only service-account client. Production realm templates не включают этот client/grant. В ответах pytest credentials fixture скрыты.
 
-Fixture cleanup удаляет **только свой случайный project**. CI after_script дополнительно проверяет job label и prefix test project перед удалением оставшихся containers/networks/volumes после прерывания. Без числового `CI_JOB_ID` этот cleanup отказывается работать. Он не обращается к `xarionix-core`/`xarionix-core-dev` и не выполняет глобальные prune.
+Fixture cleanup удаляет **только свой случайный project**. В `finally` controller дополнительно проверяет job label и prefix test project перед удалением оставшихся test containers/networks/volumes; без числового `CI_JOB_ID` этот cleanup отказывается работать. При жёстком прерывании Runner удаляет одноразовый DinD service целиком. Cleanup не обращается к `xarionix-core`/`xarionix-core-dev` и не выполняет глобальные prune.
 
 `reports/integration-diagnostics.json` при ошибке содержит только Service/State/Health/ExitCode. Raw `.env`, JWT, passwords, Docker Env и realm secrets не сохраняются как artifacts. Для расширенной локальной диагностики используйте собственную изолированную среду и не публикуйте секреты.
 
@@ -101,7 +127,7 @@ Fixture cleanup удаляет **только свой случайный projec
 
 Unit и integration запускаются отдельно. Unit job сохраняет `reports/unit.xml` и `reports/coverage.xml`; integration — отдельный JUnit. `coverage` regexp и Cobertura report формируются из одного прогона. Это обеспечивает процент в MR widget и построчные annotations при поддерживаемой версии GitLab; [эти механизмы конфигурируются отдельно](https://docs.gitlab.com/ci/testing/code_coverage/).
 
-Coverage измеряется по `app` и `scripts`, включая installer/CI helpers, без искусственного исключения сложных участков. После добавления regression-тестов измерен baseline выше 77%; в Makefile и GitLab установлен минимальный порог 70%. Точный результат — в [отчёте Sprint 1.1](sprint-1.1-validation.md). Следующий шаг — расширять покрытие CLI orchestration и постепенно повышать порог, не исключать эти файлы из расчёта.
+Coverage измеряется по `app` и `scripts`, включая installer/CI helpers, без искусственного исключения сложных участков. В Makefile и GitLab установлен минимальный порог 70%. Исходный baseline — в [отчёте Sprint 1.1](sprint-1.1-validation.md), дополнительные Docker-executor результаты — в [docker-executor.md](docker-executor.md). Следующий шаг — расширять покрытие CLI orchestration и постепенно повышать порог, не исключать эти файлы из расчёта.
 
 ## Security checks
 

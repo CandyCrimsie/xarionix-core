@@ -114,7 +114,7 @@ def test_docker_runner_preflight_fails_explicitly_not_as_a_skipped_success(monke
         raise RuntimeError("unavailable")
 
     monkeypatch.setattr(ci, "docker", unavailable)
-    with pytest.raises(RuntimeError, match="dedicated Docker-capable runner"):
+    with pytest.raises(RuntimeError, match="rootless Docker-executor setup"):
         ci.preflight()
 
 
@@ -166,21 +166,29 @@ def test_gitlab_pipeline_has_mandatory_gates_and_no_deployment():
     jobs = {name: value for name, value in config.items() if isinstance(value, dict) and "stage" in value}
     assert {job["stage"] for job in jobs.values()} == set(config["stages"])
     assert all(not job.get("allow_failure") for job in jobs.values())
-    assert config["workflow"]["rules"][0]["variables"]["XARIONIX_DOCKER_RUNNER_TAG"] == "xarionix-release"
+    assert "XARIONIX_DOCKER_RUNNER_TAG" not in config["variables"]
     publish = jobs["publish:protected-release"]
     assert all(
         'CI_COMMIT_REF_PROTECTED == "true"' in rule["if"] and "CI_COMMIT_TAG" in rule["if"]
         for rule in publish["rules"]
     )
     assert publish["dependencies"] == ["build:production"]
-    assert publish["tags"] == ["xarionix-release"]
+    assert (
+        "tags" not in publish
+    )  # inherits the actual existing group runner, not a nonexistent release runner
     assert "XARIONIX_RUN_DOCKER_TESTS" in jobs["integration:managed-stack"]["variables"]
     assert "--cov" in " ".join(jobs["test:unit"]["script"])
     assert jobs["test:unit"]["artifacts"]["reports"]["coverage_report"]["coverage_format"] == "cobertura"
     assert jobs["test:unit"]["artifacts"]["reports"]["junit"]
-    assert any("trivy" in command for command in jobs["build:production"]["script"])
+    assert jobs["build:production"]["script"] == ["python3 -u -m scripts.docker_job run build"]
     assert all(".env" not in str(job.get("artifacts", {})) for job in jobs.values())
-    assert "services" not in config[".docker"]  # No automatic privileged DinD.
+    docker_job = config[".docker"]
+    assert docker_job["tags"] == ["debian"]
+    assert "@sha256:" in docker_job["image"]
+    assert "-dind-rootless@sha256:" in docker_job["services"][0]["name"]
+    assert docker_job["variables"]["DOCKER_TLS_VERIFY"] == "1"
+    assert docker_job["variables"]["DOCKER_HOST"] == "tcp://docker:2376"
+    assert docker_job["variables"]["FF_NETWORK_PER_BUILD"] == "1"
 
 
 def test_oci_source_supports_self_hosted_gitlab_but_never_credentials(monkeypatch):
