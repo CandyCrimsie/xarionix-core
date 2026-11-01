@@ -6,6 +6,9 @@ from sqlalchemy.engine import Connection
 from app.core.config import Settings
 from app.core.database import Base, create_database
 from app.domains.identity.model import Identity  # noqa: F401
+from app.domains.registry import load_models
+
+load_models()
 
 target_metadata = Base.metadata
 

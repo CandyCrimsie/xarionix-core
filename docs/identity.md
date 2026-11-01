@@ -32,17 +32,19 @@ External Compose не содержит Keycloak или его DB. Установ
 
 ## Первый вход и проверка API
 
-После первого валидного `GET /api/v1/me` в Core DB создаётся только `Identity`. Ответ:
+После первого валидного `GET /api/v1/me` создаются Identity и глобальный профиль User **без human-допуска и бизнес-полномочий**. Старые поля ответа сохранены; добавлены:
 
 ```json
-{"id":"<internal-uuid>","issuer":"https://sso.organization.ru/realms/company","subject":"<verified-sub>"}
+{"id":"<identity-uuid>","issuer":"https://sso.organization.ru/realms/company","subject":"<verified-sub>","user_id":"<user-uuid>","principal_type":"unclassified","display_name":null,"status":"active","created_at":"<timestamp>","updated_at":"<timestamp>"}
 ```
 
 Следующий запрос с теми же issuer/sub вернёт тот же UUID. Другой issuer или subject — другая идентичность, даже при одинаковом email. Смена issuer — осознанная миграция identity links, а не автоматическое объединение.
 
 Получите **access token**, не ID token, через доверенный PKCE-клиент. Для ручной проверки используйте клиент, который умеет хранить секретные значения вне history/URL; не вставляйте JWT в shell-команду. Автоматические integration-тесты получают тестовый service-account token в отдельном disposable realm; production-клиенты такого grant не имеют.
 
-Нет Core login/password/refresh-token endpoint. Нет silent administrator provisioning. Realm roles пока не являются authorization моделью Core. Идентичность service account также может иметь UUID; её разграничение с human users появится при реализации полномочий.
+Нет Core login/password/refresh-token endpoint. Нет silent administrator provisioning. Realm roles не являются authorization моделью Core. Principal type хранится в DB и не выводится из недоказанных свойств `sub`, `azp`, имени, email или произвольного claim. Оператор сверяет Identity UUID с issuer/subject в IdP и явно допускает human; service/unclassified могут читать собственный `/me`, но не создавать компании/заявки или редактировать профиль. Машинный business API отложен. Один User в модели может иметь несколько Identity, но автоматического linking или публичного linking API нет.
+
+Для допуска и bootstrap используйте [platform-administration.md](platform-administration.md). Platform HTTP administration дополнительно требует exact `acr` из конфигурационного allowlist и свежий `auth_time` в **проверенном access token**. Пустой allowlist по умолчанию запрещает административные HTTP-операции. Не подставляйте фиктивный `acr` mapper вместо реальной MFA: см. [Keycloak authentication flows](https://www.keycloak.org/docs/latest/server_admin/index.html#_authentication-flows) и [RFC 9470](https://www.rfc-editor.org/rfc/rfc9470.html). Production realm не изменяется автоматически ради MFA; повторный import существующего realm по-прежнему не применяется.
 
 ## Google Identity Provider
 

@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     oidc_leeway_seconds: int = Field(default=15, ge=0, le=60)
     cors_origins: list[str] = []
     docs_enabled: bool = False
+    admin_acr_values: list[str] = []
+    admin_auth_max_age_seconds: int = Field(default=300, ge=30, le=900)
     db_host: str = Field(default="postgres", min_length=1, max_length=253)
     db_port: int = Field(default=5432, ge=1, le=65535)
     db_name: str = Field(default="xarionix_core", min_length=1, max_length=63)
@@ -68,6 +70,10 @@ class Settings(BaseSettings):
                 raise ValueError("Backchannel is restricted to the managed private Keycloak service")
         if len(self.db_password.get_secret_value()) < 24:
             raise ValueError("Database password must contain at least 24 characters")
+        if len(self.admin_acr_values) > 16 or any(
+            not 1 <= len(value) <= 120 for value in self.admin_acr_values
+        ):
+            raise ValueError("Administrative ACR allowlist must contain at most 16 bounded exact values")
         for origin in self.cors_origins:
             validate_url(origin, development=development)
             if urlsplit(origin).path:

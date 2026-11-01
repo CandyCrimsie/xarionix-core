@@ -2,11 +2,19 @@ import json
 import logging
 import uuid
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from typing import Annotated, Any
 
 import httpx
 import pytest
+from fastapi import Depends, Request
 
+from app.api.v1.dependencies import context
+from app.core.access import Context
+from app.core.authentication import verified_claims
 from app.core.logging import SafeJSONFormatter
+from app.domains.identity.model import Identity
+from app.domains.users.model import User
 from app.integrations.keycloak.oidc import OIDCVerifier
 from app.main import create_app
 
@@ -21,14 +29,28 @@ async def api(provider, monkeypatch):
     async def session():
         yield object()
 
-    async def resolve(session, issuer, subject):
-        calls.append((issuer, subject))
-        return identifier
+    async def resolved(request: Request, claims: Annotated[dict[str, Any], Depends(verified_claims)]):
+        calls.append((claims["iss"], claims["sub"]))
+        identity = Identity(
+            id=identifier,
+            issuer=claims["iss"],
+            subject=claims["sub"],
+            user_id=identifier,
+            principal_type="unclassified",
+        )
+        user = User(
+            id=identifier,
+            display_name=None,
+            status="active",
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        yield Context(object(), identity, user, provider.settings, claims, request.state.request_id)
 
     async def ready(engine):
         return True
 
-    monkeypatch.setattr("app.api.v1.routes.resolve_identity", resolve)
+    app.dependency_overrides[context] = resolved
     monkeypatch.setattr("app.main.database_ready", ready)
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider.handle)) as oidc_client:
         app.state.oidc = OIDCVerifier(provider.settings, oidc_client)
@@ -54,11 +76,13 @@ async def test_me_requires_verified_access_token(api, provider):
         assert calls == []
     response = await client.get("/api/v1/me", headers={"Authorization": "Bearer " + provider.token()})
     assert response.status_code == 200
-    assert response.json() == {
+    assert {key: response.json()[key] for key in ("id", "issuer", "subject")} == {
         "id": str(identifier),
         "issuer": provider.settings.oidc_issuer,
         "subject": "person-1",
     }
+    assert response.json()["user_id"] == str(identifier)
+    assert response.json()["principal_type"] == "unclassified"
     assert calls == [(provider.settings.oidc_issuer, "person-1")]
 
 

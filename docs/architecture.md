@@ -1,10 +1,10 @@
-# Архитектура Sprint 1
+# Архитектура Core — Sprint 2
 
 ## Границы
 
-Модульный монолит. `app/api/v1` — HTTP-контракты; `app/domains/identity` — единственный реализованный домен; `app/core` — конфигурация, DB и безопасное логирование; `app/integrations/keycloak` — OIDC/JWKS resource-server integration. `scripts/setup.py` — отдельный stdlib-only deployment tool, вызываемый Bash-установщиком; не часть бизнес-API.
+Модульный монолит. `app/api/v1` — строгие DTO, тонкие маршруты и transaction dependency; `app/domains` — identity, users, companies/requests, memberships, employees, invitations, platform и audit. `app/core/access.py` — централизованные проверки principal, MFA, company action и audit writer. `app/core` также содержит конфигурацию, DB и безопасное логирование; `app/integrations/keycloak` — единый OIDC/JWKS resource-server integration. `scripts/setup.py` — stdlib-only deployment tool; `scripts/platform_admin.py` — явные offline operator actions, не HTTP bootstrap.
 
-Не добавлены пустые домены ради дерева каталогов. Будущие users, companies, memberships, organizations, roles, permissions и modules получат собственные модели/сервисы/API, но будут работать в одном Core. ERP/Billing/Web не импортируются и не нужны для запуска.
+Пустые домены не добавлены. Полный RBAC, organizations hierarchy и modules отложены. ERP/Billing/Web не импортируются и не нужны для запуска.
 
 ## Identity Provider и БД
 
@@ -16,13 +16,19 @@ Managed и external используют **один** `OIDCVerifier`. Managed д
 
 ## Внутренняя идентичность
 
-`identities`: UUID, issuer, subject, created_at. Unique `(issuer, subject)`. Email не хранится и не служит ключом связывания. Первый корректный `/me` выполняет PostgreSQL `INSERT ... ON CONFLICT DO NOTHING`, читает стабильный UUID и коммитит. Одновременные первые обращения не создают дубликаты.
+`identities`: стабильный UUID, issuer, subject, user_id, principal_type, created_at. Unique `(issuer, subject)`, FK к глобальному User. При JIT mutation gate и transaction-scoped keyed advisory lock предотвращают гонку, orphan User и дубли. Существующая Identity возвращается без нового INSERT. Email не служит ключом связывания. При миграции каждая прежняя Identity получает собственный User без изменения Identity UUID.
 
-Это JIT provisioning **идентичности**, не регистрация администратора или полноценного пользователя. Нет company membership, ролей или разрешений по умолчанию. Realm roles из JWT не преобразуются в права Core. В будущем machine identities и human users следует разделить на уровне авторизации.
+JIT создаёт профиль **без полномочий**: principal_type=unclassified. Human admission выполняется явно по Identity UUID проверенным оператором или Platform Admin. Service/unclassified не получают пользовательские company-операции. Realm roles/email/username не определяют тип principal и не дают права Core. User и Employee независимы; Employee может не иметь User. Подробнее — [users-and-companies.md](users-and-companies.md).
 
 ## Миграции
 
-Alembic revision `0001_identity` создаёт только таблицу идентичностей. `create_all()` не используется. Одноразовый Compose service `migrate` выполняет `alembic upgrade head` до Core; PostgreSQL advisory lock сериализует миграции. Readiness дополнительно проверяет ожидаемую revision. При добавлении новых миграций обновляйте readiness-contract одновременно.
+Alembic `0001_identity` сохранена; `0002_platform` добавляет таблицы, FK/check/unique/indexes, безопасный backfill пользователей, default settings и DB guard triggers. `create_all()` не используется. Compose `migrate` выполняет `alembic upgrade head` до Core; deployment advisory lock сохранён. Readiness требует `0002_platform`. Деструктивный downgrade намеренно запрещён: нужен reviewed backup/restore, не удаление бизнес-таблиц.
+
+## Транзакции и авторизация
+
+Request context открывает AsyncSession transaction. `Depends(..., scope="function")` завершает COMMIT и deferred checks **до** отправки HTTP success. Ошибки FK/unique/check превращаются в безопасный 409 без SQL/payload. До критической мутации блокируется singleton `platform_settings FOR UPDATE`; после этого читаются актуальные User/Membership/policies. Это простая единая точка сериализации Sprint 2, не distributed lock и не требование Redis. Все лимиты, одобрения, принятия приглашений и изменения owner/admin проходят через неё. Ограничения на последние owner/admin дополнительно проверяются PostgreSQL deferred constraint triggers; аудит записывается в той же транзакции.
+
+Глобальный gate ограничивает write throughput; owner guard пока проверяет активные компании. Перед масштабированием требуется перейти к согласованному lock ordering per-user/per-company и targeted DB checks, сохранив нынешние concurrency-тесты. Tenant isolation не заменяется глобальной административной ролью. Подробности — [tenant-isolation.md](tenant-isolation.md).
 
 Приложение и миграции используют `core_app` (не superuser). Отдельный bootstrap superuser нужен только entrypoint PostgreSQL и обслуживанию DB. Keycloak имеет собственные DB, volume и роли; credentials не передаются Core.
 
@@ -38,4 +44,4 @@ Production: только Nginx публикует 80/443. Core:8000, PostgreSQL:
 
 ## Ограничения
 
-Нет высокодоступного deployment, Redis, distributed JWKS cache, общего SDK, UI, service-to-service authorization и RBAC. Redis не нужен текущей реализации; не запускается ради заполнения стека. Кэш ключей локален процессу; изменение доверенного issuer требует перезапуска с проверенной конфигурацией. Рабочая схема рассчитана на один явно настроенный issuer, а не на произвольные tenants.
+Нет высокодоступного deployment, Redis, distributed JWKS cache, общего SDK, UI, service-to-service business permissions и полноценного RBAC. Минимальные company роли централизованно сопоставлены действиям, не размножены по JWT/HTTP handlers. Redis не запускается ради заполнения стека. Кэш ключей локален процессу; смена доверенного issuer требует проверенной конфигурации. Рабочая схема рассчитана на один явно настроенный issuer, а не на произвольные IdP компаний.

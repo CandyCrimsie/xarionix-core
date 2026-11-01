@@ -14,7 +14,13 @@ TLS context использует доверенное системное CA-хр
 
 ## Пользователи и полномочия
 
-UUID связан только с `(issuer, subject)`. Нет email auto-linking, автосоздания администратора, локального password hash или собственного OAuth server. `/me` создаёт запись идентичности, но не права. Любой допустимый access token с audience Core может обратиться к минимальному API спринта; полноценная domain authorization — следующий этап. Не размещайте административные функции за одной проверкой JWT в будущих спринтах.
+Identity UUID связан только с `(issuer, subject)` и явным User FK. Нет email auto-linking, автосоздания администратора, локального password hash или собственного OAuth server. `/me` создаёт unclassified principal и профиль, но не права. Company API требует явного human-допуска, active User, company Membership, разрешённого действия и состояния компании. Статус service не даёт human-возможностей. Role из client header/JWT realm не учитывается. Подробности — [tenant-isolation.md](tenant-isolation.md).
+
+Platform Admin хранится отдельно от Membership. Его чувствительный HTTP API требует настроенного exact ACR и свежего auth_time; пустая/отсутствующая/неподтверждённая политика запрещает доступ. Настройки хранятся в PostgreSQL; bootstrap/recovery — только offline operator CLI с существующим Identity UUID и аудитом. Platform Admin не получает скрытого доступа к company employees/invitations/members. Последний active owner/admin защищён от конкурентных снятий.
+
+Приглашения содержат 256 случайных бит; DB хранит только SHA-256, secret возвращается один раз. Accept — JSON body POST с JWT и company_id; не URL/query. TTL максимум 7 дней, одноразовое использование, revoke, recipient UUID/verified email, текущие полномочия издателя перепроверяются. Owner-invitations запрещены; ownership передаётся отдельно. Неподтверждённый email не подходит даже при точном совпадении. Валидация не отражает request input в ответе.
+
+Audit append-only на обычном DML через PostgreSQL trigger, без token/secret/body/headers; чтение только Platform Admin с MFA, metadata allowlist. Текущий app DB user также владеет схемой для Alembic и технически может менять DDL: trigger не является tamper-proof защитой от администратора БД/компрометации owner credentials. Раздельные migration/runtime grants и внешний защищённый audit sink — задачи последующего hardening, не заявленные гарантии Sprint 2.
 
 Публичны только health и осознанно включаемая OpenAPI. `/system/info` защищён и не содержит настроек. CORS — пустой по умолчанию, только точные HTTPS origins в production; это не замена авторизации.
 

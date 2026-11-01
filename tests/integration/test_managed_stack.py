@@ -98,6 +98,39 @@ def stack(tmp_path_factory):
             "protocolMappers": copy.deepcopy(realm["clients"][1]["protocolMappers"]),
         }
     )
+    # Test-only identities and authentication context, not a production MFA flow.
+    # Explicit operator admission below is the ONLY source of human permissions.
+    test_client = copy.deepcopy(realm["clients"][-1])
+    for label in ("alice", "bob", "carol", "admin", "machine", "dave"):
+        client = copy.deepcopy(test_client)
+        client["clientId"] = "integration-" + label
+        client["protocolMappers"] += [
+            {
+                "name": "test-acr",
+                "protocol": "openid-connect",
+                "protocolMapper": "oidc-hardcoded-claim-mapper",
+                "config": {
+                    "claim.name": "acr",
+                    "claim.value": "test-step-up",
+                    "jsonType.label": "String",
+                    "access.token.claim": "true",
+                    "id.token.claim": "false",
+                },
+            },
+            {
+                "name": "test-auth-time",
+                "protocol": "openid-connect",
+                "protocolMapper": "oidc-hardcoded-claim-mapper",
+                "config": {
+                    "claim.name": "auth_time",
+                    "claim.value": str(int(time.time())),
+                    "jsonType.label": "long",
+                    "access.token.claim": "true",
+                    "id.token.claim": "false",
+                },
+            },
+        ]
+        realm["clients"].append(client)
     realm_path = folder / "realm.json"
     setup.atomic_write(realm_path, json.dumps(realm), 0o644)
     definition = yaml.safe_load((ROOT / "compose.dev.yaml").read_text())
@@ -109,6 +142,8 @@ def stack(tmp_path_factory):
         services[name]["environment"] = dict(services[name]["environment"]) | {
             "XARIONIX_PUBLIC_URL": config["PUBLIC_URL"],
             "XARIONIX_OIDC_ISSUER": issuer,
+            "XARIONIX_ADMIN_ACR_VALUES": '["test-step-up"]',
+            "XARIONIX_ADMIN_AUTH_MAX_AGE_SECONDS": "900",
         }
     services["core"]["ports"] = [f"127.0.0.1:{core_port}:8000"]
     services["postgres"]["ports"] = [f"127.0.0.1:{postgres_port}:5432"]
@@ -166,6 +201,21 @@ def stack(tmp_path_factory):
 
     try:
         execute(["config", "-q"])
+        execute(["build", "core"], timeout=1200)
+        execute(["up", "-d", "postgres", "--wait", "--wait-timeout", "120"])
+        execute(["run", "--rm", "migrate", "alembic", "upgrade", "0001_identity"])
+        legacy_id = uuid.uuid4()
+        with psycopg.connect(
+            host="localhost",
+            port=postgres_port,
+            dbname="xarionix_core",
+            user="core_app",
+            password=config["DB_PASSWORD"],
+        ) as connection:
+            connection.execute(
+                "INSERT INTO identities (id, issuer, subject) VALUES (%s,%s,%s)",
+                (legacy_id, issuer, "legacy-before-sprint-2"),
+            )
         execute(["up", "-d", "--build", "--wait", "--wait-timeout", "420"], timeout=1500)
         yield IsolatedStack(
             {
@@ -174,6 +224,7 @@ def stack(tmp_path_factory):
                 "client_secret": client_secret,
                 "postgres_port": postgres_port,
                 "execute": execute,
+                "legacy_id": legacy_id,
             }
         )
     finally:
@@ -188,13 +239,13 @@ def stack(tmp_path_factory):
             pytest.fail("Failed to clean isolated test project; no unrelated resources were removed")
 
 
-def token(stack):
+def token(stack, client_id="integration-only"):
     with httpx.Client(timeout=10, trust_env=False) as client:
         response = client.post(
             stack["issuer"] + "/protocol/openid-connect/token",
             data={
                 "grant_type": "client_credentials",
-                "client_id": "integration-only",
+                "client_id": client_id,
                 "client_secret": stack["client_secret"],
             },
         )
@@ -223,7 +274,7 @@ def test_real_managed_keycloak_token_me_and_postgres_identity(stack):
             "SELECT id, issuer, subject FROM identities WHERE id = %s", (identifier,)
         ).fetchone()
         assert row is not None and row[1] == stack["issuer"]
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0001_identity",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0002_platform",)
         assert connection.execute(
             "SELECT rolsuper FROM pg_roles WHERE rolname = current_user"
         ).fetchone() == (False,)
@@ -316,5 +367,595 @@ async def test_external_mode_with_real_provider_and_concurrent_identity_provisio
         assert len(set(identifiers)) == 1
         other = await resolve("https://other-issuer.example.test/realm")
         assert other != identifiers[0]
+        with psycopg.connect(
+            host="localhost",
+            port=stack["postgres_port"],
+            dbname="xarionix_core",
+            user="core_app",
+            password=stack["config"]["DB_PASSWORD"],
+        ) as db:
+            assert db.execute(
+                "SELECT count(*) FROM users u WHERE NOT EXISTS (SELECT 1 FROM identities i WHERE i.user_id=u.id)"
+            ).fetchone() == (0,)
     finally:
         await engine.dispose()
+
+
+@pytest.fixture(scope="module")
+def actors(stack):
+    identities = {}
+    for label in ("alice", "bob", "carol", "admin", "machine", "dave"):
+        with httpx.Client(base_url=stack["config"]["PUBLIC_URL"], timeout=20, trust_env=False) as client:
+            response = client.get(
+                "/api/v1/me", headers={"Authorization": "Bearer " + token(stack, "integration-" + label)}
+            )
+            assert response.status_code == 200
+            identities[label] = response.json()
+        stack["execute"](
+            [
+                "exec",
+                "-T",
+                "core",
+                "python",
+                "-m",
+                "scripts.platform_admin",
+                "classify",
+                "--identity-id",
+                identities[label]["id"],
+                "--principal-type",
+                "service" if label == "machine" else "human",
+            ]
+        )
+    bootstrap = [
+        "exec",
+        "-T",
+        "core",
+        "python",
+        "-m",
+        "scripts.platform_admin",
+        "bootstrap",
+        "--identity-id",
+        identities["admin"]["id"],
+    ]
+    stack["execute"](bootstrap)
+    stack["execute"](bootstrap)  # explicit, idempotent, not first-JWT bootstrap
+
+    def request(label, method, path, **kwargs):
+        with httpx.Client(base_url=stack["config"]["PUBLIC_URL"], timeout=30, trust_env=False) as client:
+            return client.request(
+                method,
+                "/api/v1" + path,
+                headers={"Authorization": "Bearer " + token(stack, "integration-" + label)},
+                **kwargs,
+            )
+
+    return IsolatedStack({"identities": identities, "request": request})
+
+
+def sql_connection(stack):
+    return psycopg.connect(
+        host="localhost",
+        port=stack["postgres_port"],
+        dbname="xarionix_core",
+        user="core_app",
+        password=stack["config"]["DB_PASSWORD"],
+    )
+
+
+def test_sprint2_preserves_legacy_identity_and_safe_defaults(stack):
+    with sql_connection(stack) as db:
+        assert db.execute(
+            "SELECT id, user_id, principal_type FROM identities WHERE id=%s", (stack["legacy_id"],)
+        ).fetchone() == (stack["legacy_id"], stack["legacy_id"], "unclassified")
+        assert db.execute("SELECT id FROM users WHERE id=%s", (stack["legacy_id"],)).fetchone() == (
+            stack["legacy_id"],
+        )
+        assert db.execute("SELECT company_creation_policy FROM platform_settings").fetchone() == ("approval",)
+        assert db.execute("SELECT count(*) FROM platform_admins").fetchone() == (0,)
+
+
+def test_sprint2_profiles_machine_denial_and_no_global_role_injection(actors):
+    call = actors["request"]
+    value = call("alice", "PATCH", "/me", json={"display_name": "Engineer Alice"})
+    assert value.status_code == 200 and value.json()["display_name"] == "Engineer Alice"
+    assert call("alice", "GET", "/me").json()["display_name"] == "Engineer Alice"
+    assert call("alice", "PATCH", "/me", json={"status": "suspended"}).status_code == 422
+    assert call("alice", "PATCH", "/me", json={"id": str(uuid.uuid4())}).status_code == 422
+    assert (
+        call(
+            "machine", "POST", "/companies", json={"name": "Forbidden", "slug": "forbidden-machine"}
+        ).status_code
+        == 403
+    )
+    assert call("machine", "PATCH", "/me", json={"display_name": "Pretend human"}).status_code == 403
+    assert call("alice", "GET", "/platform/settings").status_code == 403
+    assert (
+        call("alice", "PATCH", "/platform/settings", json={"company_creation_policy": "open"}).status_code
+        == 403
+    )
+
+
+def test_sprint2_company_policies_requests_and_atomic_approval(actors, stack):
+    call = actors["request"]
+    assert (
+        call("admin", "PATCH", "/platform/settings", json={"company_creation_policy": "closed"}).status_code
+        == 200
+    )
+    assert (
+        call("alice", "POST", "/companies", json={"name": "Closed", "slug": "closed-isp"}).status_code == 403
+    )
+    assert (
+        call(
+            "alice", "POST", "/company-requests", json={"name": "Closed", "slug": "closed-request"}
+        ).status_code
+        == 403
+    )
+    assert (
+        call("admin", "PATCH", "/platform/settings", json={"company_creation_policy": "approval"}).status_code
+        == 200
+    )
+    result = call("alice", "POST", "/company-requests", json={"name": "Approved ISP", "slug": "approved-isp"})
+    assert result.status_code == 201
+    request_id = result.json()["id"]
+    own = call("alice", "GET", "/company-requests/me").json()
+    assert request_id in {item["id"] for item in own["items"]}
+    assert call("admin", "GET", "/platform/company-requests").status_code == 200
+    assert (
+        call("alice", "POST", "/companies", json={"name": "No bypass", "slug": "approval-bypass"}).status_code
+        == 403
+    )
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(2) as pool:
+        results = list(
+            pool.map(
+                lambda _: call("admin", "POST", f"/platform/company-requests/{request_id}/approve", json={}),
+                range(2),
+            )
+        )
+    assert sorted(item.status_code for item in results) == [200, 409]
+    company_id = next(item.json()["company_id"] for item in results if item.status_code == 200)
+    assert call("alice", "GET", f"/companies/{company_id}").status_code == 200
+    # Global administration does not imply company membership.
+    assert call("admin", "GET", f"/companies/{company_id}/employees").status_code == 404
+    with sql_connection(stack) as db:
+        assert db.execute("SELECT count(*) FROM companies WHERE slug='approved-isp'").fetchone() == (1,)
+        assert db.execute(
+            "SELECT role, status FROM memberships WHERE company_id=%s AND user_id=%s",
+            (company_id, actors["identities"]["alice"]["user_id"]),
+        ).fetchone() == ("owner", "active")
+    for operation in ("reject", "cancel"):
+        value = call(
+            "bob", "POST", "/company-requests", json={"name": operation, "slug": f"request-{operation}"}
+        )
+        assert value.status_code == 201
+        rid = value.json()["id"]
+        assert call("alice", "POST", f"/company-requests/{rid}/cancel").status_code == 404
+        path = (
+            f"/platform/company-requests/{rid}/reject"
+            if operation == "reject"
+            else f"/company-requests/{rid}/cancel"
+        )
+        assert call("admin" if operation == "reject" else "bob", "POST", path, json={}).status_code == 200
+
+
+def test_sprint2_concurrent_company_limit_and_unique_slug(actors, stack):
+    from concurrent.futures import ThreadPoolExecutor
+
+    call = actors["request"]
+    assert (
+        call(
+            "admin",
+            "PATCH",
+            "/platform/settings",
+            json={"company_creation_policy": "open", "max_owned_companies_per_user": 1},
+        ).status_code
+        == 200
+    )
+    with ThreadPoolExecutor(2) as pool:
+        values = list(
+            pool.map(
+                lambda number: call(
+                    "dave", "POST", "/companies", json={"name": "Concurrent", "slug": f"concurrent-{number}"}
+                ),
+                range(2),
+            )
+        )
+    assert sorted(item.status_code for item in values) == [201, 409]
+    with sql_connection(stack) as db:
+        assert db.execute(
+            "SELECT count(*) FROM memberships WHERE user_id=%s AND role='owner'",
+            (actors["identities"]["dave"]["user_id"],),
+        ).fetchone() == (1,)
+    assert (
+        call("admin", "PATCH", "/platform/settings", json={"max_owned_companies_per_user": 10}).status_code
+        == 200
+    )
+    value = call("bob", "POST", "/companies", json={"name": "Slug", "slug": "unique-isp"})
+    assert value.status_code == 201
+    assert call("carol", "POST", "/companies", json={"name": "Slug", "slug": "unique-isp"}).status_code == 409
+    assert call("carol", "GET", "/companies?limit=101").status_code == 422
+
+
+def test_sprint2_platform_user_suspend_restore_and_last_admin_protection(actors):
+    call = actors["request"]
+    machine = actors["identities"]["machine"]["user_id"]
+    admin = actors["identities"]["admin"]["user_id"]
+    assert (
+        call("alice", "PATCH", f"/platform/users/{machine}", json={"status": "suspended"}).status_code == 403
+    )
+    assert (
+        call("admin", "PATCH", f"/platform/users/{machine}", json={"status": "suspended"}).status_code == 200
+    )
+    assert call("machine", "GET", "/me").status_code == 403
+    assert call("admin", "PATCH", f"/platform/users/{machine}", json={"status": "active"}).status_code == 200
+    assert call("machine", "GET", "/me").status_code == 200
+    assert call("admin", "PATCH", f"/platform/users/{admin}", json={"status": "suspended"}).status_code == 409
+    assert call("admin", "GET", "/platform/users").status_code == 200
+
+
+@pytest.fixture
+def tenants(actors):
+    call = actors["request"]
+    assert (
+        call(
+            "admin",
+            "PATCH",
+            "/platform/settings",
+            json={"company_creation_policy": "open", "max_owned_companies_per_user": 10},
+        ).status_code
+        == 200
+    )
+    company_ids = {}
+    for label in ("alice", "bob"):
+        value = call(
+            label,
+            "POST",
+            "/companies",
+            json={"name": label + " ISP", "slug": label + "-tenant-" + uuid.uuid4().hex[:8]},
+        )
+        assert value.status_code == 201
+        company_ids[label] = value.json()["id"]
+    return company_ids
+
+
+def test_sprint2_tenant_isolation_employees_and_explicit_links(actors, tenants):
+    call = actors["request"]
+    a, b = tenants["alice"], tenants["bob"]
+    own = call("alice", "GET", "/me/companies").json()
+    assert a in {item["id"] for item in own["items"]} and b not in {item["id"] for item in own["items"]}
+    renamed = call("bob", "PATCH", f"/companies/{b}", json={"name": "Renamed company"})
+    assert renamed.status_code == 200 and renamed.json()["id"] == b
+    employee = call("bob", "POST", f"/companies/{b}/employees", json={"display_name": "No system account"})
+    assert employee.status_code == 201 and employee.json()["user_id"] is None
+    eid = employee.json()["id"]
+    for path in (f"/companies/{b}/employees", f"/companies/{b}/members", f"/companies/{b}/invitations"):
+        assert call("alice", "GET", path).status_code == 404
+        assert call("admin", "GET", path).status_code == 404
+    assert call("alice", "GET", f"/companies/{a}/employees/{eid}").status_code == 404
+    assert (
+        call(
+            "alice", "PATCH", f"/companies/{a}/employees/{eid}", json={"display_name": "Wrong tenant"}
+        ).status_code
+        == 404
+    )
+    assert (
+        call(
+            "bob",
+            "PATCH",
+            f"/companies/{b}/employees/{eid}",
+            json={"user_id": actors["identities"]["alice"]["user_id"]},
+        ).status_code
+        == 409
+    )
+    assert (
+        call(
+            "bob",
+            "PATCH",
+            f"/companies/{b}/employees/{eid}",
+            json={"user_id": actors["identities"]["bob"]["user_id"], "position": "Engineer"},
+        ).status_code
+        == 200
+    )
+    assert call("bob", "GET", f"/companies/{b}/employees/{eid}").json()["position"] == "Engineer"
+    # Company status affects domain access, but an explicit owner can restore it.
+    assert call("bob", "PATCH", f"/companies/{b}", json={"status": "suspended"}).status_code == 200
+    assert call("bob", "GET", f"/companies/{b}/employees").status_code == 403
+    assert call("bob", "PATCH", f"/companies/{b}", json={"status": "active"}).status_code == 200
+    assert call("bob", "PATCH", f"/companies/{b}", json={"status": "archived"}).status_code == 200
+    assert call("bob", "PATCH", f"/companies/{b}", json={"status": "active"}).status_code == 200
+
+
+def invite(actors, company_id, sender="alice", recipient="carol", **fields):
+    value = actors["request"](
+        sender,
+        "POST",
+        f"/companies/{company_id}/invitations",
+        json={"recipient_user_id": actors["identities"][recipient]["user_id"], **fields},
+    )
+    assert value.status_code == 201
+    return value.json()
+
+
+def test_sprint2_invitations_concurrency_one_time_hash_and_membership_roles(actors, tenants, stack):
+    from concurrent.futures import ThreadPoolExecutor
+
+    call = actors["request"]
+    company = tenants["alice"]
+    issued = invite(actors, company)
+    secret, iid = issued["secret"], issued["invitation"]["id"]
+    with sql_connection(stack) as db:
+        stored = db.execute("SELECT token_hash FROM invitations WHERE id=%s", (iid,)).fetchone()[0]
+        assert stored != secret and len(stored) == 64
+        events = db.execute("SELECT details FROM audit_events WHERE resource_id=%s", (iid,)).fetchall()
+        assert all(secret not in str(event) and stored not in str(event) for event in events)
+    listing = call("alice", "GET", f"/companies/{company}/invitations")
+    assert secret not in listing.text and stored not in listing.text
+    assert (
+        call("bob", "POST", "/invitations/accept", json={"company_id": company, "secret": secret}).status_code
+        == 403
+    )
+    assert (
+        call(
+            "carol", "POST", "/invitations/accept", json={"company_id": tenants["bob"], "secret": secret}
+        ).status_code
+        == 404
+    )
+    with ThreadPoolExecutor(2) as pool:
+        values = list(
+            pool.map(
+                lambda _: call(
+                    "carol", "POST", "/invitations/accept", json={"company_id": company, "secret": secret}
+                ),
+                range(2),
+            )
+        )
+    assert sorted(value.status_code for value in values) == [200, 409]
+    membership = next(value.json() for value in values if value.status_code == 200)
+    mid = membership["id"]
+    assert call("carol", "GET", f"/companies/{company}/employees").status_code == 200
+    assert (
+        call("carol", "POST", f"/companies/{company}/employees", json={"display_name": "Denied"}).status_code
+        == 403
+    )
+    assert (
+        call("alice", "PATCH", f"/companies/{company}/members/{mid}", json={"role": "admin"}).status_code
+        == 200
+    )
+    assert (
+        call("carol", "POST", f"/companies/{company}/invitations", json={"role": "admin"}).status_code == 403
+    )
+    assert (
+        call("carol", "POST", f"/companies/{company}/employees", json={"display_name": "Allowed"}).status_code
+        == 201
+    )
+    assert (
+        call(
+            "alice", "PATCH", f"/companies/{company}/members/{mid}", json={"status": "suspended"}
+        ).status_code
+        == 200
+    )
+    assert call("carol", "GET", f"/companies/{company}/employees").status_code == 404
+    assert (
+        call("alice", "PATCH", f"/companies/{company}/members/{mid}", json={"status": "active"}).status_code
+        == 200
+    )
+    assert call("carol", "POST", f"/companies/{company}/leave").status_code == 200
+    assert call("carol", "GET", f"/companies/{company}/employees").status_code == 404
+
+
+def test_sprint2_invitation_expiration_revocation_email_and_escalation(actors, tenants, stack):
+    call, company = actors["request"], tenants["alice"]
+    revoked = invite(actors, company)
+    iid = revoked["invitation"]["id"]
+    assert call("alice", "DELETE", f"/companies/{company}/invitations/{iid}").status_code == 200
+    assert (
+        call(
+            "carol", "POST", "/invitations/accept", json={"company_id": company, "secret": revoked["secret"]}
+        ).status_code
+        == 409
+    )
+    expired = invite(actors, company)
+    with sql_connection(stack) as db:
+        db.execute(
+            "UPDATE invitations SET created_at=now()-interval '3 hours', expires_at=now()-interval '1 hour' WHERE id=%s",
+            (expired["invitation"]["id"],),
+        )
+    assert (
+        call(
+            "carol", "POST", "/invitations/accept", json={"company_id": company, "secret": expired["secret"]}
+        ).status_code
+        == 409
+    )
+    email = invite(actors, company, recipient_email="verified@example.test")
+    assert (
+        call(
+            "carol", "POST", "/invitations/accept", json={"company_id": company, "secret": email["secret"]}
+        ).status_code
+        == 403
+    )
+    assert (
+        call("alice", "POST", f"/companies/{company}/invitations", json={"role": "owner"}).status_code == 422
+    )
+    assert (
+        call("admin", "PATCH", "/platform/settings", json={"invitations_enabled": False}).status_code == 200
+    )
+    assert call("alice", "POST", f"/companies/{company}/invitations", json={}).status_code == 403
+    assert call("admin", "PATCH", "/platform/settings", json={"invitations_enabled": True}).status_code == 200
+
+
+def test_sprint2_last_owner_concurrent_demotion_and_transfer(actors, tenants, stack):
+    from concurrent.futures import ThreadPoolExecutor
+
+    call, company = actors["request"], tenants["alice"]
+    issued = invite(actors, company)
+    added = call(
+        "carol", "POST", "/invitations/accept", json={"company_id": company, "secret": issued["secret"]}
+    )
+    assert added.status_code == 200
+    target = added.json()["id"]
+    members = call("alice", "GET", f"/companies/{company}/members").json()["items"]
+    owner = next(item for item in members if item["user_id"] == actors["identities"]["alice"]["user_id"])
+    assert call("alice", "DELETE", f"/companies/{company}/members/{owner['id']}").status_code == 409
+    assert (
+        call("alice", "PATCH", f"/companies/{company}/members/{target}", json={"role": "owner"}).status_code
+        == 200
+    )
+    with ThreadPoolExecutor(2) as pool:
+        values = list(
+            pool.map(
+                lambda pair: call(
+                    pair[0], "PATCH", f"/companies/{company}/members/{pair[1]}", json={"role": "member"}
+                ),
+                [("alice", owner["id"]), ("carol", target)],
+            )
+        )
+    assert sorted(value.status_code for value in values) == [200, 409]
+    with sql_connection(stack) as db:
+        assert db.execute(
+            "SELECT count(*) FROM memberships WHERE company_id=%s AND role='owner' AND status='active'",
+            (company,),
+        ).fetchone() == (1,)
+    # A separate company tests explicit transfer without depending on race winner.
+    other = tenants["bob"]
+    item = invite(actors, other, sender="bob", recipient="alice")
+    result = call(
+        "alice", "POST", "/invitations/accept", json={"company_id": other, "secret": item["secret"]}
+    )
+    assert result.status_code == 200
+    assert (
+        call(
+            "bob",
+            "POST",
+            f"/companies/{other}/transfer-ownership",
+            json={"target_membership_id": result.json()["id"]},
+        ).status_code
+        == 200
+    )
+    members = call("alice", "GET", f"/companies/{other}/members").json()["items"]
+    assert (
+        next(row for row in members if row["user_id"] == actors["identities"]["bob"]["user_id"])["role"]
+        == "admin"
+    )
+
+
+def test_sprint2_last_admin_database_backstops_and_append_only_audit(actors, stack):
+    call = actors["request"]
+    assert (
+        call(
+            "admin",
+            "POST",
+            "/companies",
+            json={"name": "DB guard", "slug": "db-guard-" + uuid.uuid4().hex[:8]},
+        ).status_code
+        == 201
+    )
+    admin_id = actors["identities"]["admin"]["user_id"]
+    assert call("admin", "DELETE", f"/platform/admins/{admin_id}").status_code == 409
+    second = actors["identities"]["bob"]["user_id"]
+    assert call("admin", "POST", "/platform/admins", json={"user_id": second}).status_code == 201
+    assert call("admin", "DELETE", f"/platform/admins/{second}").status_code == 200
+    with pytest.raises(psycopg.errors.CheckViolation), sql_connection(stack) as db:
+        db.execute("UPDATE platform_admins SET active=false WHERE user_id=%s", (admin_id,))
+    with pytest.raises(psycopg.errors.InsufficientPrivilege), sql_connection(stack) as db:
+        db.execute("DELETE FROM audit_events")
+    with pytest.raises(psycopg.errors.CheckViolation), sql_connection(stack) as db:
+        db.execute("UPDATE memberships SET role='member' WHERE role='owner'")
+    with sql_connection(stack) as db:
+        assert db.execute("SELECT active FROM platform_admins WHERE user_id=%s", (admin_id,)).fetchone() == (
+            True,
+        )
+        assert db.execute(
+            "SELECT count(*) FROM audit_events WHERE action='platform_admin.bootstrapped'"
+        ).fetchone() == (1,)
+    assert call("alice", "GET", "/platform/audit").status_code == 403
+    response = call("admin", "GET", "/platform/audit?limit=100")
+    assert response.status_code == 200 and response.json()["total"] > 0
+
+
+def test_sprint2_concurrent_ownership_transfers_and_admin_revocations(actors, stack):
+    from concurrent.futures import ThreadPoolExecutor
+
+    call = actors["request"]
+    assert (
+        call(
+            "admin",
+            "PATCH",
+            "/platform/settings",
+            json={"company_creation_policy": "open", "max_owned_companies_per_user": 10},
+        ).status_code
+        == 200
+    )
+    created = call("carol", "POST", "/companies", json={"name": "Transfer race", "slug": "transfer-race"})
+    assert created.status_code == 201
+    cid = created.json()["id"]
+    targets = []
+    for label in ("bob", "dave"):
+        issued = invite(actors, cid, sender="carol", recipient=label)
+        joined = call(
+            label, "POST", "/invitations/accept", json={"company_id": cid, "secret": issued["secret"]}
+        )
+        assert joined.status_code == 200
+        targets.append(joined.json()["id"])
+    with ThreadPoolExecutor(2) as pool:
+        values = list(
+            pool.map(
+                lambda target: call(
+                    "carol",
+                    "POST",
+                    f"/companies/{cid}/transfer-ownership",
+                    json={"target_membership_id": target},
+                ),
+                targets,
+            )
+        )
+    assert sorted(item.status_code for item in values) == [200, 403]
+    admin_ids = {label: actors["identities"][label]["user_id"] for label in ("admin", "bob")}
+    assert call("admin", "POST", "/platform/admins", json={"user_id": admin_ids["bob"]}).status_code == 201
+    with ThreadPoolExecutor(2) as pool:
+        values = list(
+            pool.map(
+                lambda label: (label, call(label, "DELETE", f"/platform/admins/{admin_ids[label]}")),
+                ("admin", "bob"),
+            )
+        )
+    assert sorted(item.status_code for _, item in values) == [200, 409]
+    survivor = next(label for label, item in values if item.status_code == 409)
+    assert call(survivor, "POST", "/platform/admins", json={"user_id": admin_ids["admin"]}).status_code == 201
+    assert call("admin", "DELETE", f"/platform/admins/{admin_ids['bob']}").status_code == 200
+    with pytest.raises(psycopg.errors.CheckViolation), sql_connection(stack) as db:
+        db.execute("UPDATE users SET status='suspended' WHERE id=%s", (admin_ids["admin"],))
+
+
+def test_sprint2_deferred_commit_failure_returns_conflict_and_rolls_back_everything(actors, stack):
+    call = actors["request"]
+    assert (
+        call(
+            "admin",
+            "PATCH",
+            "/platform/settings",
+            json={"company_creation_policy": "open", "max_owned_companies_per_user": 10},
+        ).status_code
+        == 200
+    )
+    with sql_connection(stack) as db:
+        before = db.execute("SELECT count(*) FROM companies").fetchone()[0]
+        audits_before = db.execute("SELECT count(*) FROM audit_events").fetchone()[0]
+        db.execute("""CREATE FUNCTION test_reject_company_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+            IF NEW.action='company.created' THEN RAISE EXCEPTION 'test failure' USING ERRCODE='23514'; END IF;
+            RETURN NULL; END $$""")
+        db.execute(
+            "CREATE CONSTRAINT TRIGGER test_reject_company_audit AFTER INSERT ON audit_events DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION test_reject_company_audit()"
+        )
+    try:
+        result = call("alice", "POST", "/companies", json={"name": "Must rollback", "slug": "rollback-isp"})
+        assert result.status_code == 409
+        assert result.json() == {"detail": {"code": "data_conflict"}}
+        with sql_connection(stack) as db:
+            assert db.execute("SELECT count(*) FROM companies").fetchone()[0] == before
+            assert db.execute("SELECT count(*) FROM audit_events").fetchone()[0] == audits_before
+            assert db.execute("SELECT count(*) FROM companies WHERE slug='rollback-isp'").fetchone() == (0,)
+    finally:
+        with sql_connection(stack) as db:
+            db.execute("DROP TRIGGER test_reject_company_audit ON audit_events")
+            db.execute("DROP FUNCTION test_reject_company_audit()")

@@ -1,39 +1,42 @@
 from typing import Annotated, Any
-from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends
 
-from app.domains.identity.service import resolve_identity
-from app.integrations.keycloak.oidc import InvalidToken
+from app.api.v1.dependencies import Ctx
+from app.api.v1.schemas import Profile, ProfilePatch
+from app.core.access import audit, require_human
+from app.core.authentication import verified_claims
 
 router = APIRouter(prefix="/api/v1")
-bearer = HTTPBearer(auto_error=False)
 
 
-async def verified_claims(
-    request: Request, credential: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]
-) -> dict[str, Any]:
-    if credential is not None:
-        try:
-            return await request.app.state.oidc.verify(credential.credentials)  # type: ignore[no-any-return]
-        except InvalidToken:
-            pass
-    raise HTTPException(401, "Invalid or missing access token", headers={"WWW-Authenticate": "Bearer"})
+def profile(ctx: Ctx) -> Profile:
+    return Profile(
+        id=ctx.identity.id,
+        issuer=ctx.identity.issuer,
+        subject=ctx.identity.subject,
+        user_id=ctx.user.id,
+        principal_type=ctx.identity.principal_type,
+        display_name=ctx.user.display_name,
+        status=ctx.user.status,
+        created_at=ctx.user.created_at,
+        updated_at=ctx.user.updated_at,
+    )
 
 
-class MeResponse(BaseModel):
-    id: UUID
-    issuer: str
-    subject: str
+@router.get("/me")
+async def me(ctx: Ctx) -> Profile:
+    return profile(ctx)
 
 
-@router.get("/me", response_model=MeResponse)
-async def me(request: Request, claims: Annotated[dict[str, Any], Depends(verified_claims)]) -> MeResponse:
-    async with request.app.state.sessions() as session:
-        identifier = await resolve_identity(session, claims["iss"], claims["sub"])
-    return MeResponse(id=identifier, issuer=claims["iss"], subject=claims["sub"])
+@router.patch("/me")
+async def update_me(payload: ProfilePatch, ctx: Ctx) -> Profile:
+    require_human(ctx)
+    ctx.user.display_name = payload.display_name
+    audit(ctx, "user.profile_changed", "user", ctx.user.id)
+    await ctx.session.flush()
+    await ctx.session.refresh(ctx.user)
+    return profile(ctx)
 
 
 @router.get("/system/info")

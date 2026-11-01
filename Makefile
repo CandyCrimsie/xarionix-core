@@ -27,7 +27,8 @@ compose-check:
 dev-config:
 	.venv/bin/python -m scripts.setup dev --language ru
 dev-up: dev-config
-	$(DEV_COMPOSE) up -d --build --wait --wait-timeout 420
+	$(DEV_COMPOSE) build core
+	$(DEV_COMPOSE) up -d --no-build --wait --wait-timeout 420
 dev-down:
 	$(DEV_COMPOSE) down
 dev-status:

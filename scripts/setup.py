@@ -38,6 +38,8 @@ DEFAULTS = {
     "OIDC_AUDIENCE": "xarionix-core",
     "DOCS_ENABLED": "false",
     "CORS_ORIGINS": "[]",
+    "ADMIN_ACR_VALUES": "[]",
+    "ADMIN_AUTH_MAX_AGE_SECONDS": "300",
     "POSTGRES_IMAGE": "postgres:18.6-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5",
     "KEYCLOAK_IMAGE": "quay.io/keycloak/keycloak:26.8.1@sha256:3f3c5f8e03c614774b4bd9173b88391fefa4153bfc010d8012d59ad825377332",
     "NGINX_IMAGE": "nginxinc/nginx-unprivileged:1.30.6-alpine@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03",
@@ -277,6 +279,18 @@ def validate(config: dict[str, str], *, development: bool = False) -> None:
                 raise ValueError()
     except (ValueError, TypeError):
         raise SetupError("invalid", "XARIONIX_CORS_ORIGINS") from None
+    try:
+        acr = json.loads(config.get("ADMIN_ACR_VALUES", "[]"))
+        if (
+            not isinstance(acr, list)
+            or len(acr) > 16
+            or any(not isinstance(item, str) or not 1 <= len(item) <= 120 for item in acr)
+        ):
+            raise ValueError()
+        if not 30 <= int(config.get("ADMIN_AUTH_MAX_AGE_SECONDS", "300")) <= 900:
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise SetupError("invalid", "XARIONIX_ADMIN_ACR_VALUES") from None
     for key in SECRETS if mode == "managed" else SECRETS[:2]:
         if not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", config.get(key, "")):
             raise SetupError("invalid", f"XARIONIX_{key}")
