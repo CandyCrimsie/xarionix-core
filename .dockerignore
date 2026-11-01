@@ -10,6 +10,15 @@
 .install.lock
 .venv
 __pycache__
+**/__pycache__
+**/*.py[cod]
+**/.env
+**/.env.*
+**/*.env
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
 deploy/generated
 backups
 tests
@@ -17,3 +26,5 @@ tests
 .mypy_cache
 .ruff_cache
 dist
+reports
+.ci-tmp

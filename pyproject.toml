@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.27,<2"]
+requires = ["hatchling==1.33.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.4,<10", "pytest-asyncio>=1.2,<2", "ruff>=0.14,<1", "mypy>=1.18,<2", "pip-audit>=2.9,<3", "bandit[toml]>=1.8,<2", "types-PyYAML>=6,<7", "PyYAML>=6,<7"]
+dev = ["pytest>=8.4,<10", "pytest-asyncio>=1.2,<2", "pytest-cov>=7.1,<8", "ruff>=0.14,<1", "mypy>=1.18,<2", "pip-audit>=2.9,<3", "bandit[toml]>=1.8,<2", "types-PyYAML>=6,<7", "PyYAML>=6,<7"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["app", "scripts"]
@@ -40,3 +40,11 @@ plugins = ["pydantic.mypy"]
 
 [tool.bandit]
 exclude_dirs = ["tests", ".venv"]
+
+[tool.coverage.run]
+source = ["app", "scripts"]
+relative_files = true
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true

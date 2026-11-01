@@ -1,5 +1,7 @@
 # Xarionix Core
 
+Sprint 1.1: исправлены Docker mounts; добавлены GitLab CI/CD, реальные изолированные integration tests, coverage и security/image gates. Настройка runners и release policy — [docs/ci-cd.md](docs/ci-cd.md). CI не выполняет автоматический production deployment.
+
 Самостоятельное платформенное ядро Xarionix ERP/OSS/BSS. Sprint 1: безопасный FastAPI resource server, внутренняя UUID-идентичность, PostgreSQL/Alembic, Keycloak, HTTPS reverse proxy и установщик RU/EN.
 
 Core **не зависит** от ERP, Web или Billing. Их код, авторизация и данные сюда не перенесены. Нет локальных паролей, собственной выдачи пользовательских токенов, компаний, RBAC, Billing или Angular UI. Проверенный токен ещё не означает административные полномочия.
@@ -27,6 +29,8 @@ make dev-down
 ```
 
 `dev-down` не удаляет volumes. Не применяйте `down -v` к рабочей установке.
+
+`make dev-up` ждёт healthy (до 420 секунд на первый запуск Keycloak). `make dev-status`, `make dev-logs`, `make dev-test` показывают состояние и проверяют endpoints. `make compose-check` использует временные test-only `.env`/TLS/config, а не production secrets. Bind mounts не создают отсутствующие файлы как каталоги; `/tmp` сохраняет требуемые security flags.
 
 ## Production
 
@@ -74,9 +78,11 @@ make security
 XARIONIX_RUN_DOCKER_TESTS=1 .venv/bin/pytest tests/integration -vv
 ```
 
-`requirements.lock` фиксирует runtime, `requirements-dev.lock` — инструменты и тесты. `pip-audit --strict` требует сети и проверяет Python-зависимости; контейнерные образы дополнительно сканируйте средствами вашей CI/registry. Registry digests закреплены после проверки 31.10.2026. Обновление — только осознанное, с повторными проверками.
+`make test` запускает unit/API/regression отдельно от integration и сохраняет JUnit/Cobertura в `reports/`. Полный локальный набор: `make check`, `make integration-test`, `make docker-build`, `make docker-scan`. GitLab использует 7 обязательных стадий; Docker jobs требуют специально настроенного runner. GitLab Pipeline badge не добавлен: публичный web URL GitLab из текущего SSH remote неизвестен, URL не выдумывается.
 
-Документация: [архитектура](docs/architecture.md), [идентичность и Google IdP](docs/identity.md), [безопасность](docs/security-model.md), [установка, переменные и эксплуатация](docs/installation.md), [проверки спринта](docs/sprint-1-validation.md).
+`requirements.lock` фиксирует runtime, `requirements-dev.lock` — инструменты и тесты. `make security` проверяет оба lock-файла через `pip-audit --strict`; `make docker-scan` проверяет Core image через Trivy. Runtime закреплён на Alpine, установочные инструменты из него удалены. Обновление версий и digests — только осознанное, с повторными проверками.
+
+Документация: [архитектура](docs/architecture.md), [идентичность и Google IdP](docs/identity.md), [безопасность](docs/security-model.md), [установка, переменные и эксплуатация](docs/installation.md), [CI/CD](docs/ci-cd.md), [проверки Sprint 1.1](docs/sprint-1.1-validation.md). [Отчёт Sprint 1](docs/sprint-1-validation.md) сохранён как исторический.
 
 ## Следующие этапы
 

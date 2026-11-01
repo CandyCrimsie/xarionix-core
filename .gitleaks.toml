@@ -1,0 +1,13 @@
+title = "Xarionix Core secret scanning"
+[extend]
+useDefault = true
+
+# Gitleaks interprets the JDBC host:port/database as an API key. It contains no
+# username/password, is identical in both manifests, and cannot be an app password
+# (installer requires 32+ random characters). Do not exempt a whole file or rule.
+[[allowlists]]
+description = "Exact non-secret internal PostgreSQL JDBC endpoint, including this documented exception"
+condition = "AND"
+regexTarget = "match"
+paths = ['''(^|/)(compose\.(dev|keycloak)\.yaml|\.gitleaks\.toml)$''']
+regexes = ['''^keycloak-postgres:5432/keycloak$''']

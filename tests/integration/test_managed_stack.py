@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 
 import httpx
+import jwt
 import psycopg
 import pytest
 import yaml
@@ -26,9 +27,26 @@ from app.core.database import create_database
 from app.domains.identity.service import resolve_identity
 from app.main import create_app
 from scripts import setup
+from scripts.ci import preflight
 
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[2]
+
+
+class IsolatedStack(dict):
+    def __repr__(self):
+        return "<isolated Docker stack; credentials redacted>"
+
+
+def poll(check, *, timeout=240):
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return check()
+        except (httpx.HTTPError, AssertionError, KeyError):
+            if time.monotonic() >= deadline:
+                pytest.fail("Isolated stack readiness deadline exceeded")
+            time.sleep(0.25)
 
 
 def free_port():
@@ -40,9 +58,21 @@ def free_port():
 @pytest.fixture(scope="module")
 def stack(tmp_path_factory):
     if os.environ.get("XARIONIX_RUN_DOCKER_TESTS") != "1":
+        if os.environ.get("CI") == "true":
+            pytest.fail(
+                "CI integration must set XARIONIX_RUN_DOCKER_TESTS=1; silently skipped Docker tests are forbidden"
+            )
         pytest.skip("Opt-in Docker integration: XARIONIX_RUN_DOCKER_TESTS=1")
+    try:
+        preflight()
+    except RuntimeError as error:
+        pytest.fail(str(error))
     folder = tmp_path_factory.mktemp("managed-stack")
-    project = "xarionix-core-test-" + uuid.uuid4().hex[:12]
+    job = os.environ.get("CI_JOB_ID", "local")
+    pipeline = os.environ.get("CI_PIPELINE_ID", "local")
+    if not all(value == "local" or value.isdecimal() for value in (job, pipeline)):
+        pytest.fail("Invalid CI project isolation identifiers")
+    project = f"xarionix-test-{pipeline}-{job}-" + uuid.uuid4().hex[:8]
     core_port, keycloak_port, postgres_port = free_port(), free_port(), free_port()
     issuer = f"http://localhost:{keycloak_port}/realms/xarionix"
     config = setup.DEFAULTS | {key: secrets.token_hex(32) for key in setup.SECRETS}
@@ -74,7 +104,8 @@ def stack(tmp_path_factory):
     services = definition["services"]
     for name in ("core", "migrate"):
         services[name]["image"] = "xarionix-core-test:" + project
-        services[name]["build"] = str(ROOT)
+        if name == "core":
+            services[name]["build"] = str(ROOT)
         services[name]["environment"] = dict(services[name]["environment"]) | {
             "XARIONIX_PUBLIC_URL": config["PUBLIC_URL"],
             "XARIONIX_OIDC_ISSUER": issuer,
@@ -82,12 +113,15 @@ def stack(tmp_path_factory):
     services["core"]["ports"] = [f"127.0.0.1:{core_port}:8000"]
     services["postgres"]["ports"] = [f"127.0.0.1:{postgres_port}:5432"]
     for name in ("postgres", "keycloak-postgres"):
-        services[name]["volumes"][1] = (
-            str(ROOT / "deploy/postgres/10-app-user.sh") + ":/docker-entrypoint-initdb.d/10-app-user.sh:ro"
-        )
+        services[name]["volumes"][1]["source"] = str(ROOT / "deploy/postgres/10-app-user.sh")
     services["keycloak"]["environment"]["KC_HOSTNAME"] = config["KEYCLOAK_PUBLIC_URL"]
     services["keycloak"]["ports"] = [f"127.0.0.1:{keycloak_port}:8080"]
-    services["keycloak"]["volumes"] = [str(realm_path) + ":/opt/keycloak/data/import/xarionix-realm.json:ro"]
+    services["keycloak"]["volumes"][0]["source"] = str(realm_path)
+    for service in services.values():
+        service["labels"] = {"io.xarionix.test.job-id": job}
+    for volume in definition["volumes"]:
+        definition["volumes"][volume] = {"labels": {"io.xarionix.test.job-id": job}}
+    definition["networks"] = {"default": {"labels": {"io.xarionix.test.job-id": job}}}
     compose_path, env_path = folder / "compose.yaml", folder / ".env"
     setup.atomic_write(compose_path, yaml.safe_dump(definition))
     setup.atomic_write(env_path, setup.env_text(config))
@@ -97,30 +131,61 @@ def stack(tmp_path_factory):
     }
 
     def execute(arguments, timeout=600):
-        result = subprocess.run(command + arguments, env=environment, capture_output=True, timeout=timeout)
-        if result.returncode:
-            # No raw docker output; it may contain credentials from the test-only realm.
-            pytest.fail(
-                "Disposable managed stack command failed; inspect Docker locally without publishing secrets"
+        try:
+            result = subprocess.run(
+                command + arguments, env=environment, capture_output=True, timeout=timeout
             )
+        except (OSError, subprocess.TimeoutExpired):
+            pytest.fail(
+                "Docker/Compose unavailable or timed out: integration requires the dedicated Docker runner"
+            )
+        if result.returncode:
+            reports = ROOT / "reports"
+            reports.mkdir(exist_ok=True)
+            status = subprocess.run(
+                command + ["ps", "--all", "--format", "json"], env=environment, capture_output=True
+            )
+            try:
+                value = status.stdout.decode()
+                items = (
+                    json.loads(value)
+                    if value.startswith("[")
+                    else [json.loads(line) for line in value.splitlines()]
+                )
+                safe = [
+                    {key: item.get(key) for key in ("Service", "State", "Health", "ExitCode")}
+                    for item in items
+                ]
+                (reports / "integration-diagnostics.json").write_text(json.dumps(safe))
+            except (ValueError, TypeError):
+                pass
+            pytest.fail(
+                "Isolated stack command failed. See reports/integration-diagnostics.json; raw credentials/config are not logged"
+            )
+        return result.stdout
 
     try:
-        execute(["up", "-d", "--build", "--wait", "--wait-timeout", "300"], timeout=1200)
-        yield {
-            "config": config,
-            "issuer": issuer,
-            "client_secret": client_secret,
-            "postgres_port": postgres_port,
-            "execute": execute,
-        }
+        execute(["config", "-q"])
+        execute(["up", "-d", "--build", "--wait", "--wait-timeout", "420"], timeout=1500)
+        yield IsolatedStack(
+            {
+                "config": config,
+                "issuer": issuer,
+                "client_secret": client_secret,
+                "postgres_port": postgres_port,
+                "execute": execute,
+            }
+        )
     finally:
         # Destructive cleanup is limited to the generated random test project and its own volumes.
-        subprocess.run(
+        cleanup = subprocess.run(
             command + ["down", "--volumes", "--remove-orphans"],
             env=environment,
             capture_output=True,
             timeout=120,
         )
+        if cleanup.returncode:
+            pytest.fail("Failed to clean isolated test project; no unrelated resources were removed")
 
 
 def token(stack):
@@ -168,14 +233,55 @@ def test_real_managed_keycloak_token_me_and_postgres_identity(stack):
 
 
 def test_restarting_managed_keycloak_does_not_overwrite_realm(stack):
-    stack["execute"](["restart", "keycloak"])
-    for _attempt in range(90):
-        try:
-            token(stack)
-            return
-        except (httpx.HTTPError, AssertionError):
-            time.sleep(2)
-    pytest.fail("Keycloak did not recover after restart; import must skip the existing realm")
+    with httpx.Client(base_url=stack["config"]["PUBLIC_URL"], timeout=15, trust_env=False) as client:
+
+        def identity():
+            response = client.get("/api/v1/me", headers={"Authorization": "Bearer " + token(stack)})
+            assert response.status_code == 200
+            return response.json()["id"]
+
+        original = identity()
+        stack["execute"](["up", "-d", "--no-build", "--wait", "--wait-timeout", "240"])
+        assert poll(identity) == original
+        stack["execute"](["restart", "postgres", "keycloak-postgres", "keycloak", "core"])
+        assert poll(identity) == original
+        assert poll(lambda: ready(client)) == 200
+
+
+def ready(client):
+    status = client.get("/health/ready").status_code
+    assert status == 200
+    return status
+
+
+def test_discovery_jwks_and_engine_mount_options(stack):
+    with httpx.Client(timeout=15, trust_env=False) as client:
+        discovery = client.get(stack["issuer"] + "/.well-known/openid-configuration").json()
+        assert discovery["issuer"] == stack["issuer"]
+        keys = client.get(discovery["jwks_uri"]).json()["keys"]
+        assert any(
+            key.get("alg") == "RS256" and jwt.PyJWK.from_dict(key).key.key_size >= 2048 for key in keys
+        )
+    identifier = stack["execute"](["ps", "-q", "core"]).decode().strip()
+    result = subprocess.run(
+        ["docker", "inspect", "--format", "{{json .HostConfig.Tmpfs}}", identifier],
+        check=True,
+        capture_output=True,
+    )
+    mounts = json.loads(result.stdout)
+    assert set(mounts) == {"/tmp"}
+    assert {"noexec", "nosuid", "nodev", "size=64m"} <= set(mounts["/tmp"].split(","))
+    live_mounts = stack["execute"](
+        [
+            "exec",
+            "-T",
+            "core",
+            "python",
+            "-c",
+            "print(next(l for l in open('/proc/mounts') if l.split()[1]=='/tmp'))",
+        ]
+    ).decode()
+    assert "noexec" in live_mounts and "nosuid" in live_mounts and "size=65536k" in live_mounts
 
 
 async def test_external_mode_with_real_provider_and_concurrent_identity_provisioning(stack):

@@ -1,0 +1,167 @@
+stages: [validate, lint, test, integration, security, build, publish]
+
+workflow:
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v?[0-9]+\.[0-9]+\.[0-9]+$/ && $CI_COMMIT_REF_PROTECTED == "true"'
+      variables:
+        XARIONIX_DOCKER_RUNNER_TAG: xarionix-release
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH && $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS && $CI_PIPELINE_SOURCE == "push"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH'
+
+variables:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+  DOCKER_BUILDKIT: "1"
+  XARIONIX_DOCKER_RUNNER_TAG: xarionix-docker
+
+default:
+  interruptible: true
+
+.python:
+  image: python:3.13.18-slim@sha256:76baad6037690d6e8c4397fbcaef17bca6f19eecef822b708fe8fa3417d30bb5
+  before_script:
+    - apt-get update && apt-get install --no-install-recommends -y git
+    - python3 -m venv .venv
+    - .venv/bin/python -m pip install -r requirements-dev.lock
+    - .venv/bin/python -m pip install --no-deps -e .
+
+# Dedicated ephemeral Linux SHELL executor; no implicit Docker socket mount or privileged DinD.
+# Runner must provide Python 3.12+, Make, Git, OpenSSL, Docker Engine and Compose v2.24+.
+.docker:
+  tags: ["$XARIONIX_DOCKER_RUNNER_TAG"]
+  before_script:
+    - python3 -m venv .venv
+    - .venv/bin/python -m pip install -r requirements-dev.lock
+    - .venv/bin/python -m pip install --no-deps -e .
+    - .venv/bin/python -m scripts.ci preflight
+
+.full:
+  rules: &full_rules
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_COMMIT_TAG =~ /^v?[0-9]+\.[0-9]+\.[0-9]+$/ && $CI_COMMIT_REF_PROTECTED == "true"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+validate:repository:
+  extends: .python
+  stage: validate
+  script:
+    - .venv/bin/python -m scripts.validate
+
+validate:compose:
+  extends: .docker
+  stage: validate
+  script:
+    - .venv/bin/python -m scripts.compose_check --nginx
+
+lint:python-shell:
+  extends: .python
+  stage: lint
+  script:
+    - .venv/bin/ruff check app scripts tests migrations
+    - .venv/bin/ruff format --check app scripts tests migrations
+    - .venv/bin/mypy app scripts migrations
+    - bash -n install.sh
+    - sh -n deploy/postgres/10-app-user.sh
+
+test:unit:
+  extends: .python
+  stage: test
+  script:
+    - mkdir -p reports
+    - .venv/bin/pytest -vv -m "not integration" --junitxml=reports/unit.xml --cov=app --cov=scripts --cov-report=term-missing --cov-report=xml:reports/coverage.xml --cov-fail-under=70
+  coverage: '/TOTAL\s+\d+\s+\d+\s+(\d+(?:\.\d+)?%)/'
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths: [reports/unit.xml, reports/coverage.xml]
+    reports:
+      junit: reports/unit.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: reports/coverage.xml
+
+integration:managed-stack:
+  extends: .docker
+  stage: integration
+  rules: *full_rules
+  timeout: 30 minutes
+  variables:
+    XARIONIX_RUN_DOCKER_TESTS: "1"
+  script:
+    - mkdir -p reports
+    - .venv/bin/pytest -vv -m integration --junitxml=reports/integration.xml
+  after_script:
+    - .venv/bin/python -m scripts.ci cleanup-tests
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths: [reports/integration.xml, reports/integration-diagnostics.json]
+    reports:
+      junit: reports/integration.xml
+
+security:python:
+  extends: .python
+  stage: security
+  script:
+    - .venv/bin/bandit -q -r app scripts
+    - .venv/bin/pip-audit -r requirements.lock --strict
+    - .venv/bin/pip-audit -r requirements-dev.lock --strict
+
+security:git-secrets:
+  extends: .docker
+  stage: security
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    - .venv/bin/python -m scripts.ci secrets
+  artifacts:
+    when: always
+    expire_in: 7 days
+    paths: [reports/gitleaks.json, reports/gitleaks-working-tree.json]
+
+security:image-candidate:
+  extends: .docker
+  stage: security
+  rules: *full_rules
+  timeout: 30 minutes
+  script:
+    - .venv/bin/python -m scripts.ci build --image "xarionix-core:scan-$CI_COMMIT_REF_SLUG-$CI_JOB_ID"
+    - .venv/bin/python -m scripts.ci trivy --image "xarionix-core:scan-$CI_COMMIT_REF_SLUG-$CI_JOB_ID"
+  artifacts:
+    when: always
+    expire_in: 7 days
+    paths: [reports/trivy-image.json]
+
+build:production:
+  extends: .docker
+  stage: build
+  rules: *full_rules
+  timeout: 30 minutes
+  script:
+    - .venv/bin/python -m scripts.ci build --image "xarionix-core:build-$CI_COMMIT_REF_SLUG-$CI_JOB_ID"
+    - .venv/bin/python -m scripts.ci image-check --image "xarionix-core:build-$CI_COMMIT_REF_SLUG-$CI_JOB_ID"
+    # Scan the exact final artifact too; rebuilding must not bypass the previous security stage.
+    - .venv/bin/python -m scripts.ci trivy --image "xarionix-core:build-$CI_COMMIT_REF_SLUG-$CI_JOB_ID"
+    - .venv/bin/python -m scripts.ci export --image "xarionix-core:build-$CI_COMMIT_REF_SLUG-$CI_JOB_ID"
+  artifacts:
+    expire_in: 1 day
+    access: developer
+    paths: [dist/core-image.tar, dist/image.json, reports/trivy-image.json]
+
+publish:protected-release:
+  extends: .docker
+  stage: publish
+  tags: [xarionix-release]
+  interruptible: false
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v?[0-9]+\.[0-9]+\.[0-9]+$/ && $CI_COMMIT_REF_PROTECTED == "true"'
+  dependencies: [build:production]
+  resource_group: core-release
+  script:
+    - .venv/bin/python -m scripts.ci publish

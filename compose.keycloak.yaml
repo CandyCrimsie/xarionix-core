@@ -12,8 +12,14 @@ services:
       APP_USER: keycloak_app
       APP_PASSWORD: ${XARIONIX_KC_DB_PASSWORD:?}
     volumes:
-      - keycloak_database:/var/lib/postgresql
-      - ./deploy/postgres/10-app-user.sh:/docker-entrypoint-initdb.d/10-app-user.sh:ro
+      - type: volume
+        source: keycloak_database
+        target: /var/lib/postgresql
+      - type: bind
+        source: ./deploy/postgres/10-app-user.sh
+        target: /docker-entrypoint-initdb.d/10-app-user.sh
+        read_only: true
+        bind: {create_host_path: false}
     networks: [keycloak_db]
     restart: unless-stopped
     security_opt: [no-new-privileges:true]
@@ -40,11 +46,17 @@ services:
       KC_HTTP_MANAGEMENT_HEALTH_ENABLED: "true"
       KC_LOG_LEVEL: info
     volumes:
-      - ./deploy/generated/xarionix-realm.json:/opt/keycloak/data/import/xarionix-realm.json:ro
+      - type: bind
+        source: ./deploy/generated/xarionix-realm.json
+        target: /opt/keycloak/data/import/xarionix-realm.json
+        read_only: true
+        bind: {create_host_path: false}
     networks: [edge, keycloak_db]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    tmpfs: [/tmp:rw,nosuid,size=128m]
+    # JVM may extract executable native libraries here; noexec is intentionally not set.
+    tmpfs:
+      - "/tmp:rw,nosuid,nodev,size=128m"
     restart: unless-stopped
     depends_on:
       keycloak-postgres: {condition: service_healthy}

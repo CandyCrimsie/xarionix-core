@@ -652,7 +652,11 @@ def install(args: argparse.Namespace, language: str) -> None:
     run(command + ["config", "--quiet"])
     check_ports(command)
     print(message("start", language))
-    run(command + ["pull", "--ignore-buildable"], timeout=1800)
+    infrastructure = ["postgres", "nginx"]
+    if config["KEYCLOAK_MODE"] == "managed":
+        infrastructure += ["keycloak-postgres", "keycloak"]
+    # Core and migrate share the locally built image; never pull it from a public registry.
+    run(command + ["pull", *infrastructure], timeout=1800)
     run(command + ["build"], timeout=1800)
     # Dynamic upstream resolution allows syntax validation before Core/Keycloak start.
     run(command + ["run", "--rm", "--no-deps", "nginx", "-t"], timeout=60)

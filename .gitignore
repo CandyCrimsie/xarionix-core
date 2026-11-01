@@ -21,3 +21,5 @@ backups/
 .coverage
 htmlcov/
 .install.lock
+reports/
+.ci-tmp/

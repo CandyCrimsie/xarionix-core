@@ -2,7 +2,6 @@
 name: xarionix-core-dev
 x-app: &app
   image: xarionix-core:0.1.0
-  build: .
   user: "10001:10001"
   environment: &environment
     XARIONIX_ENVIRONMENT: development
@@ -18,7 +17,8 @@ x-app: &app
     XARIONIX_DB_USER: core_app
     XARIONIX_DB_NAME: xarionix_core
   read_only: true
-  tmpfs: [/tmp:rw,noexec,nosuid,size=64m]
+  tmpfs:
+    - "/tmp:rw,noexec,nosuid,nodev,size=64m"
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
 services:
@@ -32,8 +32,14 @@ services:
       APP_USER: core_app
       APP_PASSWORD: ${XARIONIX_DB_PASSWORD:?}
     volumes:
-      - dev_core_database:/var/lib/postgresql
-      - ./deploy/postgres/10-app-user.sh:/docker-entrypoint-initdb.d/10-app-user.sh:ro
+      - type: volume
+        source: dev_core_database
+        target: /var/lib/postgresql
+      - type: bind
+        source: ./deploy/postgres/10-app-user.sh
+        target: /docker-entrypoint-initdb.d/10-app-user.sh
+        read_only: true
+        bind: {create_host_path: false}
     healthcheck:
       test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
       interval: 5s
@@ -47,6 +53,7 @@ services:
       postgres: {condition: service_healthy}
   core:
     <<: *app
+    build: .
     ports: ["127.0.0.1:8000:8000"]
     depends_on:
       migrate: {condition: service_completed_successfully}
@@ -67,8 +74,14 @@ services:
       APP_USER: keycloak_app
       APP_PASSWORD: ${XARIONIX_KC_DB_PASSWORD:?}
     volumes:
-      - dev_keycloak_database:/var/lib/postgresql
-      - ./deploy/postgres/10-app-user.sh:/docker-entrypoint-initdb.d/10-app-user.sh:ro
+      - type: volume
+        source: dev_keycloak_database
+        target: /var/lib/postgresql
+      - type: bind
+        source: ./deploy/postgres/10-app-user.sh
+        target: /docker-entrypoint-initdb.d/10-app-user.sh
+        read_only: true
+        bind: {create_host_path: false}
     healthcheck:
       test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
       interval: 5s
@@ -91,7 +104,13 @@ services:
       KC_HEALTH_ENABLED: "true"
     ports: ["127.0.0.1:8090:8080"]
     volumes:
-      - ./deploy/generated/dev-realm.json:/opt/keycloak/data/import/xarionix-realm.json:ro
+      - type: bind
+        source: ./deploy/generated/dev-realm.json
+        target: /opt/keycloak/data/import/xarionix-realm.json
+        read_only: true
+        bind: {create_host_path: false}
+    tmpfs:
+      - "/tmp:rw,nosuid,nodev,size=128m"
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     depends_on:
