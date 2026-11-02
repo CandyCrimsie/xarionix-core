@@ -6,7 +6,8 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 
-from app.core.access import Context, audit, fail, human_user, mutation_gate
+from app.core import locking
+from app.core.access import Context, audit, fail, human_user
 from app.core.config import Settings
 from app.core.database import create_database
 from app.domains.identity.model import Identity
@@ -22,14 +23,14 @@ async def execute(args: argparse.Namespace) -> None:
     engine, sessions = create_database(config)
     try:
         async with sessions() as session, session.begin():
-            await mutation_gate(session)
+            await locking.administration(session)
             identity = await session.get(Identity, args.identity_id)
             if identity is None:
                 raise ValueError("Existing Identity UUID required")
             user = await session.get(User, identity.user_id)
             if user is None or user.status != "active":
                 raise ValueError("Active existing User required")
-            ctx = Context(session, identity, user, config, {}, "operator-cli", operator=True)
+            ctx = Context(session, identity, user, config, {}, "operator-cli", operator=True, mutating=True)
             if args.command == "classify":
                 # Operator already verified UUID/IdP mapping out of band. No JWT inference.
                 await classify(ctx, identity.id, args.principal_type)

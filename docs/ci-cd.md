@@ -111,6 +111,8 @@ Registry password не передаётся аргументом команды 
 
 ## Integration tests
 
+Sprint 3 сохраняет `.gitlab-ci.yml`, семь stages, rootless DinD/TLS и Runner allowlist без изменений. Новые `test_assurance.py`, `test_rbac.py`, `integration/test_sprint3.py` автоматически попадают в прежние jobs. Coverage threshold остаётся 70%; security gates не ослаблены. Результаты локальных проверок и ограничения — [sprint-3-validation.md](sprint-3-validation.md).
+
 ```bash
 make integration-test
 ```

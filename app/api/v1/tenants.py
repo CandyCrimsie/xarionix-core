@@ -31,6 +31,7 @@ from app.api.v1.schemas import (
     UserStatusPatch,
     UserView,
 )
+from app.core import locking
 from app.core.access import audit, fail, require_company, require_human, require_platform
 from app.domains.audit.model import AuditEvent
 from app.domains.companies.model import Company, CompanyRequest
@@ -86,7 +87,32 @@ async def company_detail(company_id: UUID, ctx: Ctx) -> Company:
 
 @router.patch("/companies/{company_id}", response_model=CompanyView)
 async def company_edit(company_id: UUID, payload: CompanyPatch, ctx: Ctx) -> Company:
+    owners_to_lock: list[UUID] = []
+    if payload.status:
+        await locking.policy(ctx.session)
+        owners_to_lock = list(
+            (
+                await ctx.session.scalars(
+                    select(Membership.user_id).where(
+                        Membership.company_id == company_id, Membership.role == "owner"
+                    )
+                )
+            ).all()
+        )
+        await locking.quota(ctx.session, *owners_to_lock)
     value, _ = await require_company(ctx, company_id, "company.manage", allow_inactive=True)
+    if payload.status:
+        current_owners = set(
+            (
+                await ctx.session.scalars(
+                    select(Membership.user_id).where(
+                        Membership.company_id == company_id, Membership.role == "owner"
+                    )
+                )
+            ).all()
+        )
+        if current_owners != set(owners_to_lock):
+            fail(409, "ownership_changed_retry")
     if value.status == "archived" and payload.status and payload.status != "archived":
         owners = await ctx.session.scalars(
             select(Membership.user_id).where(
@@ -197,6 +223,7 @@ async def new_invitation(company_id: UUID, payload: InvitationCreate, ctx: Ctx) 
         hours=payload.expires_in_hours,
         recipient_user_id=payload.recipient_user_id,
         recipient_email=payload.recipient_email,
+        role_ids=payload.role_ids,
     )
     return InvitationIssued(invitation=InvitationView.model_validate(value), secret=secret)
 

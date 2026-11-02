@@ -1,4 +1,6 @@
-# Пользователи, компании и участие — Sprint 2
+# Пользователи, компании и участие — Sprint 3
+
+Контракт Sprint 2 сохранён. Permission-based роли, дополнительные API и protected compatibility layer описаны в [rbac.md](rbac.md). Таблица ниже описывает встроенные роли; custom roles могут добавлять разрешённые capabilities без получения ownership.
 
 ## Разные сущности
 
@@ -66,7 +68,7 @@ Pending-заявка не резервирует slug и не создаёт к�
 
 Owner может явно назначить совладельца через Membership PATCH; при этом проверяется quota нового владельца. Owner invitation запрещена. `transfer-ownership` делает выбранного активного human-участника owner, текущего owner — admin, атомарно. Другие совладельцы не меняются. Последний активный owner защищён от выхода, исключения, demotion и suspension; PostgreSQL deferred check также учитывает active User. Приостановка Membership не удаляет Employee и не меняет User в других компаниях.
 
-Неактивная компания блокирует обычные domain actions. Явный active owner может управлять её метаданными/восстановлением; при восстановлении архивной компании проверяется quota, а на COMMIT — наличие owner. Критические операции сериализованы DB gate, а не предварительной проверкой в Python без lock.
+Неактивная компания блокирует обычные domain actions. Явный active owner может управлять её метаданными/восстановлением; при восстановлении архивной компании проверяется quota, а на COMMIT — наличие owner. Критические операции используют company/quota/policy locks, не общий exclusive gate.
 
 ## Приглашения
 
@@ -75,6 +77,8 @@ Owner может явно назначить совладельца через M
 Accept: `POST /api/v1/invitations/accept`, JSON `company_id` + `secret`; токен не помещается в URL. Проверяются pending/expiry, recipient, active company, действующие права издателя и отсутствие существующего active/suspended Membership. Removed Membership можно восстановить только новым приглашением; suspended не обходится re-invite. Membership и статус accepted сохраняются одной транзакцией, повторное/конкурентное использование даёт 409. Роль определяется сохранённым приглашением, не accept payload. Выдача/accept отключаются глобальным `invitations_enabled`; чтение/отзыв остаются доступны.
 
 ## HTTP API
+
+Sprint 3 дополнительно принимает `role_ids` в InvitationCreate (до 20 custom roles); grantability и snapshot проверяются при issue и accept. Базовый `role=member/admin` совместим; Owner-инвайты и system role UUID в custom списке запрещены. Подробнее — [permission-delegation.md](permission-delegation.md).
 
 Все URI ниже начинаются с `/api/v1`; списки имеют `items,total,limit,offset`, limit 1–100, offset 0–100000, стабильный tie-break UUID.
 
@@ -101,6 +105,6 @@ Platform endpoints описаны отдельно в [platform-administration.m
 
 ## Миграция и проверка
 
-Сделайте backup, используйте текущие credentials/volumes и `alembic upgrade head` через штатный `migrate` service. Для production нужен maintenance rollout: остановите старый Core/входящий трафик, соберите новый image, выполните миграцию и запустите новый Core. Старый resolver не заполняет новый обязательный user_id; zero-downtime совместимость старой версии с новой схемой не заявляется. DB/Keycloak volumes не удаляются. `create_all`, drop_all и автоматический downgrade не используются. Legacy backfill протестирован на реальной `0001_identity` с существующей записью; её id и issuer/subject сохраняются. Readiness требует `0002_platform`. Для dev повторите `make dev-up`; существующий realm не перезаписывается импортом.
+Сделайте backup, используйте текущие credentials/volumes и `alembic upgrade head` через штатный `migrate` service. Для production нужен maintenance rollout: остановите старый Core/входящий трафик, соберите новый image, выполните миграцию и запустите новый Core. Zero-downtime совместимость старой версии с новой схемой не заявляется. DB/Keycloak volumes не удаляются. `create_all`, drop_all и автоматический downgrade не используются. Проверяется 0001 → 0002 с прежними Users/Companies/Memberships/Employees/Invitations/audit → 0003/0004; все UUID/данные сохраняются. Readiness требует `0004_rbac`. Для dev повторите `make dev-up`; существующий realm не перезаписывается импортом. [Подробная процедура](transaction-locking.md#upgrade-sprint-2--sprint-3).
 
-Локально: `make check`, `make integration-test`, `make dev-up`, `make dev-test`, `make docker-build IMAGE=xarionix-core:sprint-2`, `make docker-scan IMAGE=xarionix-core:sprint-2`. Integration использует отдельные test volumes и реальный Keycloak/PostgreSQL. Результаты — [sprint-2-validation.md](sprint-2-validation.md).
+Локально: `make check`, `make integration-test`, `make dev-up`, `make dev-test`, `make docker-build IMAGE=xarionix-core:sprint-3`, `make docker-scan IMAGE=xarionix-core:sprint-3`. Integration использует отдельные test volumes и реальный Keycloak/PostgreSQL. Результаты — [sprint-3-validation.md](sprint-3-validation.md); Sprint 2 report сохранён как исторический.

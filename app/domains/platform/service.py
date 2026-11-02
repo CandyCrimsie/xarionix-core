@@ -3,6 +3,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 
+from app.core import locking
 from app.core.access import Context, audit, fail, human_user, mutation_gate, require_platform
 from app.domains.identity.model import Identity
 from app.domains.platform.model import PlatformAdmin, PlatformSettings
@@ -20,7 +21,7 @@ async def update_settings(ctx: Context, fields: dict[str, Any]) -> PlatformSetti
 
 
 async def assign_admin(ctx: Context, user_id: UUID, active: bool) -> PlatformAdmin:
-    await mutation_gate(ctx.session)
+    await locking.administration(ctx.session)
     await require_platform(ctx)
     await human_user(ctx.session, user_id)
     admin = await ctx.session.get(PlatformAdmin, user_id)
@@ -48,7 +49,7 @@ async def assign_admin(ctx: Context, user_id: UUID, active: bool) -> PlatformAdm
 
 
 async def classify(ctx: Context, identity_id: UUID, principal_type: str) -> Identity:
-    await mutation_gate(ctx.session)
+    await locking.administration(ctx.session)
     value = await ctx.session.get(Identity, identity_id)
     if value is None:
         fail(404, "identity_not_found")
@@ -62,7 +63,7 @@ async def classify(ctx: Context, identity_id: UUID, principal_type: str) -> Iden
 
 
 async def set_user_status(ctx: Context, user_id: UUID, status: str) -> User:
-    await mutation_gate(ctx.session)
+    await locking.administration(ctx.session)
     await require_platform(ctx)
     value = await ctx.session.get(User, user_id)
     if value is None:

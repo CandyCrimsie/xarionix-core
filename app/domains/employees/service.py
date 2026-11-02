@@ -3,7 +3,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from app.core.access import Context, audit, fail, mutation_gate, require_company
+from app.core.access import Context, audit, fail, require_company
 from app.domains.employees.model import Employee
 from app.domains.memberships.model import Membership
 
@@ -20,7 +20,6 @@ async def get_employee(ctx: Context, company_id: UUID, employee_id: UUID) -> Emp
 async def save_employee(
     ctx: Context, company_id: UUID, fields: dict[str, Any], employee_id: UUID | None = None
 ) -> Employee:
-    await mutation_gate(ctx.session)
     await require_company(ctx, company_id, "employees.manage")
     if fields.get("user_id"):
         member = await ctx.session.scalar(

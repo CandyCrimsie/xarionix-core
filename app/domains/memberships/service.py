@@ -2,14 +2,19 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 
-from app.core.access import Context, audit, fail, human_user, mutation_gate, require_company
+from app.core import locking
+from app.core.access import Context, audit, fail, human_user, require_company
 from app.domains.companies.service import check_quota
 from app.domains.memberships.model import Membership
+from app.domains.rbac import authorization
+from app.domains.rbac.model import MembershipRole, RolePermission
 
 
 async def scoped_member(ctx: Context, company_id: UUID, member_id: UUID) -> Membership:
     member = await ctx.session.scalar(
-        select(Membership).where(Membership.id == member_id, Membership.company_id == company_id)
+        select(Membership)
+        .where(Membership.id == member_id, Membership.company_id == company_id)
+        .execution_options(populate_existing=True)
     )
     if member is None:
         fail(404, "membership_not_found")
@@ -40,7 +45,9 @@ async def update_member(
     status: str | None = None,
     leaving: bool = False,
 ) -> Membership:
-    await mutation_gate(ctx.session)
+    await locking.policy(ctx.session)
+    preliminary = await scoped_member(ctx, company_id, member_id)
+    await locking.quota(ctx.session, ctx.user.id, preliminary.user_id)
     _, actor = await require_company(ctx, company_id, "company.read" if leaving else "members.manage")
     target = await scoped_member(ctx, company_id, member_id)
     if leaving:
@@ -50,6 +57,23 @@ async def update_member(
     elif actor.role != "owner" and (target.role in {"owner", "admin"} or role in {"owner", "admin"}):
         fail(403, "owner_required")
     next_role, next_status = role or target.role, status or target.status
+    if target.status != "active" and next_status == "active" and actor.role != "owner":
+        keys = set(
+            (
+                await ctx.session.scalars(
+                    select(RolePermission.permission_key)
+                    .join(
+                        MembershipRole,
+                        (MembershipRole.role_id == RolePermission.role_id)
+                        & (MembershipRole.company_id == RolePermission.company_id),
+                    )
+                    .where(MembershipRole.company_id == company_id, MembershipRole.membership_id == target.id)
+                )
+            ).all()
+        )
+        await authorization.require_grantable(
+            ctx, company_id, keys, legacy_member_invitation=target.role == "member"
+        )
     if next_status != "removed":
         await human_user(ctx.session, target.user_id)
     await protect_owner(ctx, target, next_role, next_status)
@@ -66,7 +90,9 @@ async def update_member(
 
 
 async def transfer(ctx: Context, company_id: UUID, target_id: UUID) -> Membership:
-    await mutation_gate(ctx.session)
+    await locking.policy(ctx.session)
+    preliminary = await scoped_member(ctx, company_id, target_id)
+    await locking.quota(ctx.session, ctx.user.id, preliminary.user_id)
     _, actor = await require_company(ctx, company_id, "ownership.transfer")
     target = await scoped_member(ctx, company_id, target_id)
     if target.id == actor.id or target.status != "active":

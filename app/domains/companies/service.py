@@ -3,13 +3,15 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 
-from app.core.access import Context, audit, fail, human_user, mutation_gate, require_human, require_platform
+from app.core import locking
+from app.core.access import Context, audit, fail, human_user, require_human, require_platform
 from app.domains.companies.model import Company, CompanyRequest
 from app.domains.memberships.model import Membership
 
 
 async def check_quota(ctx: Context, user_id: UUID, *, excluding: UUID | None = None) -> None:
-    settings = await mutation_gate(ctx.session)
+    settings = await locking.policy(ctx.session)
+    await locking.quota(ctx.session, user_id)
     query = (
         select(func.count())
         .select_from(Membership)
@@ -30,7 +32,7 @@ async def check_quota(ctx: Context, user_id: UUID, *, excluding: UUID | None = N
 async def create_company(
     ctx: Context, name: str, slug: str, owner_id: UUID | None = None, *, approved: bool = False
 ) -> Company:
-    settings = await mutation_gate(ctx.session)
+    settings = await locking.policy(ctx.session)
     require_human(ctx)
     owner_id = owner_id or ctx.user.id
     await human_user(ctx.session, owner_id)
@@ -50,7 +52,7 @@ async def create_company(
 
 async def request_company(ctx: Context, name: str, slug: str) -> CompanyRequest:
     require_human(ctx)
-    settings = await mutation_gate(ctx.session)
+    settings = await locking.policy(ctx.session)
     if settings.company_creation_policy != "approval":
         fail(403, "company_requests_not_enabled")
     await check_quota(ctx, ctx.user.id)
@@ -74,7 +76,7 @@ async def request_company(ctx: Context, name: str, slug: str) -> CompanyRequest:
 async def review_request(
     ctx: Context, request_id: UUID, operation: str, comment: str | None = None
 ) -> CompanyRequest:
-    await mutation_gate(ctx.session)
+    await locking.policy(ctx.session)
     if operation != "cancel":
         await require_platform(ctx)
     else:

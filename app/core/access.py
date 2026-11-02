@@ -1,5 +1,6 @@
 import math
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Never
 from uuid import UUID
@@ -8,6 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import locking
 from app.core.config import Settings
 from app.domains.audit.model import AuditEvent
 from app.domains.companies.model import Company
@@ -30,6 +32,8 @@ class Context:
     claims: dict[str, Any] = field(repr=False)
     request_id: str | None = None
     operator: bool = False
+    clock: Callable[[], float] = field(default=time.time, repr=False)
+    mutating: bool = False
 
 
 async def mutation_gate(session: AsyncSession) -> PlatformSettings:
@@ -56,13 +60,15 @@ def require_mfa(ctx: Context) -> None:
         or isinstance(authenticated, bool)
         or not math.isfinite(authenticated)
         or not -ctx.config.oidc_leeway_seconds
-        <= time.time() - authenticated
+        <= ctx.clock() - authenticated
         <= ctx.config.admin_auth_max_age_seconds
     ):
         fail(403, "configured_recent_mfa_required")
 
 
 async def require_platform(ctx: Context) -> None:
+    await locking.administration(ctx.session, shared=not ctx.mutating)
+    await ctx.session.refresh(ctx.user)
     require_human(ctx)
     admin = await ctx.session.get(PlatformAdmin, ctx.user.id)
     if admin is None or not admin.active:
@@ -70,37 +76,18 @@ async def require_platform(ctx: Context) -> None:
     require_mfa(ctx)
 
 
-PERMISSIONS: dict[str, set[str]] = {
-    "company.read": {"owner", "admin", "member"},
-    "company.manage": {"owner"},
-    "members.read": {"owner", "admin", "member"},
-    "members.manage": {"owner", "admin"},
-    "employees.read": {"owner", "admin", "member"},
-    "employees.manage": {"owner", "admin"},
-    "invitations.manage": {"owner", "admin"},
-    "ownership.transfer": {"owner"},
-}
-
-
 async def require_company(
     ctx: Context, company_id: UUID, permission: str, *, allow_inactive: bool = False
 ) -> tuple[Company, Membership]:
-    require_human(ctx)
-    member = await ctx.session.scalar(
-        select(Membership).where(
-            Membership.company_id == company_id,
-            Membership.user_id == ctx.user.id,
-            Membership.status == "active",
-        )
+    from app.domains.rbac.authorization import require
+
+    result = await require(
+        ctx,
+        company_id,
+        permission if permission.startswith("core.") else "core." + permission,
+        allow_inactive=allow_inactive,
     )
-    company = await ctx.session.get(Company, company_id) if member else None
-    if company is None or member is None:
-        fail(404, "company_not_found")
-    if member.role not in PERMISSIONS.get(permission, set()):
-        fail(403, "company_permission_denied")
-    if company.status != "active" and not allow_inactive:
-        fail(403, "company_not_active")
-    return company, member
+    return result.company, result.member
 
 
 async def human_user(session: AsyncSession, user_id: UUID) -> User:

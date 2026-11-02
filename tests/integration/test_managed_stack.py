@@ -12,6 +12,7 @@ import os
 import secrets
 import socket
 import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -156,7 +157,7 @@ def stack(tmp_path_factory):
             "XARIONIX_PUBLIC_URL": config["PUBLIC_URL"],
             "XARIONIX_OIDC_ISSUER": issuer,
             "XARIONIX_ADMIN_ACR_VALUES": '["test-step-up"]',
-            "XARIONIX_ADMIN_AUTH_MAX_AGE_SECONDS": "900",
+            "XARIONIX_ADMIN_AUTH_MAX_AGE_SECONDS": "300",
         }
     services["core"]["ports"] = [f"127.0.0.1:{core_port}:8000"]
     services["postgres"]["ports"] = [f"127.0.0.1:{postgres_port}:5432"]
@@ -229,6 +230,73 @@ def stack(tmp_path_factory):
                 "INSERT INTO identities (id, issuer, subject) VALUES (%s,%s,%s)",
                 (legacy_id, issuer, "legacy-before-sprint-2"),
             )
+        execute(["run", "--rm", "migrate", "alembic", "upgrade", "0002_platform"])
+        snapshot = {
+            key: uuid.uuid4()
+            for key in (
+                "owner",
+                "admin",
+                "member",
+                "company",
+                "owner_member",
+                "admin_member",
+                "member_member",
+                "employee",
+                "invitation",
+                "audit",
+            )
+        }
+        with psycopg.connect(
+            host="localhost",
+            port=postgres_port,
+            dbname="xarionix_core",
+            user="core_app",
+            password=config["DB_PASSWORD"],
+        ) as db:
+            for role in ("owner", "admin", "member"):
+                db.execute(
+                    "INSERT INTO users(id,display_name) VALUES (%s,%s)", (snapshot[role], "Sprint 2 " + role)
+                )
+                db.execute(
+                    "INSERT INTO identities(id,issuer,subject,user_id,principal_type) VALUES (%s,%s,%s,%s,'human')",
+                    (uuid.uuid4(), issuer, "migration-" + role, snapshot[role]),
+                )
+            db.execute(
+                "INSERT INTO companies(id,name,slug,created_by_user_id) VALUES (%s,'Preserved company','migration-existing',%s)",
+                (snapshot["company"], snapshot["owner"]),
+            )
+            for role in ("owner", "admin", "member"):
+                db.execute(
+                    "INSERT INTO memberships(id,company_id,user_id,role) VALUES (%s,%s,%s,%s)",
+                    (snapshot[role + "_member"], snapshot["company"], snapshot[role], role),
+                )
+            db.execute(
+                "INSERT INTO employees(id,company_id,user_id,display_name) VALUES (%s,%s,%s,'Preserved employee')",
+                (snapshot["employee"], snapshot["company"], snapshot["member"]),
+            )
+            db.execute(
+                "INSERT INTO invitations(id,company_id,created_by_user_id,role,token_hash,expires_at) VALUES (%s,%s,%s,'member',%s,now()+interval '1 day')",
+                (snapshot["invitation"], snapshot["company"], snapshot["owner"], secrets.token_hex(32)),
+            )
+            db.execute(
+                "INSERT INTO audit_events(id,action,resource_type,resource_id,company_id,details) VALUES (%s,'migration.seed','company',%s,%s,'{}')",
+                (snapshot["audit"], snapshot["company"], snapshot["company"]),
+            )
+        if os.environ.get("XARIONIX_RUN_LOCK_BENCHMARKS") == "1":
+            from scripts.locking_benchmark import run
+
+            def benchmark_connection():
+                return psycopg.connect(
+                    host="localhost",
+                    port=postgres_port,
+                    dbname="xarionix_core",
+                    user="core_app",
+                    password=config["DB_PASSWORD"],
+                )
+
+            for revision in ("0002_platform", "0003_locking"):
+                execute(["run", "--rm", "migrate", "alembic", "upgrade", revision])
+                run(benchmark_connection, revision, ROOT / "reports" / f"benchmark-{revision}.json")
         execute(["up", "-d", "--build", "--wait", "--wait-timeout", "420"], timeout=1500)
         yield IsolatedStack(
             {
@@ -238,6 +306,9 @@ def stack(tmp_path_factory):
                 "postgres_port": postgres_port,
                 "execute": execute,
                 "legacy_id": legacy_id,
+                "upgrade_snapshot": snapshot,
+                "authentication_lock": threading.RLock(),
+                "authentication_clients": {},
             }
         )
     finally:
@@ -252,8 +323,10 @@ def stack(tmp_path_factory):
             pytest.fail("Failed to clean isolated test project; no unrelated resources were removed")
 
 
-def token(stack, client_id="integration-only"):
-    with httpx.Client(timeout=10, trust_env=False) as client:
+def token(stack, client_id="integration-only", *, authentication_time=None):
+    with stack["authentication_lock"], httpx.Client(timeout=10, trust_env=False) as client:
+        if client_id != "integration-only":
+            refresh_test_authentication(stack, client, client_id, authentication_time)
         response = client.post(
             stack["issuer"] + "/protocol/openid-connect/token",
             data={
@@ -264,6 +337,42 @@ def token(stack, client_id="integration-only"):
         )
         assert response.status_code == 200
         return response.json()["access_token"]
+
+
+def refresh_test_authentication(stack, client, client_id, authentication_time):
+    """Disposable realm only. Synthetic context tests enforcement, NOT human MFA."""
+    with stack["authentication_lock"]:
+        base = stack["config"]["KEYCLOAK_PUBLIC_URL"]
+        if time.time() >= stack.get("admin_token_expires", 0):
+            response = client.post(
+                base + "/realms/master/protocol/openid-connect/token",
+                data={
+                    "client_id": "admin-cli",
+                    "grant_type": "password",
+                    "username": "bootstrap-admin",
+                    "password": stack["config"]["KC_ADMIN_PASSWORD"],
+                },
+            )
+            assert response.status_code == 200, "Disposable Keycloak administration unavailable"
+            stack["admin_token"] = response.json()["access_token"]
+            stack["admin_token_expires"] = time.time() + response.json()["expires_in"] - 30
+        headers = {"Authorization": "Bearer " + stack["admin_token"]}
+        url = base + "/admin/realms/xarionix/clients"
+        if client_id not in stack["authentication_clients"]:
+            response = client.get(url, params={"clientId": client_id}, headers=headers)
+            assert response.status_code == 200 and len(response.json()) == 1
+            value = response.json()[0]
+            mapper = next(item for item in value["protocolMappers"] if item["name"] == "test-auth-time")
+            stack["authentication_clients"][client_id] = (value["id"], mapper)
+        identifier, mapper = stack["authentication_clients"][client_id]
+        mapper = copy.deepcopy(mapper)
+        mapper["config"]["claim.value"] = str(
+            int(time.time()) if authentication_time is None else authentication_time
+        )
+        response = client.put(
+            url + f"/{identifier}/protocol-mappers/models/{mapper['id']}", headers=headers, json=mapper
+        )
+        assert response.status_code == 204, "Cannot refresh disposable authentication context"
 
 
 def test_real_managed_keycloak_token_me_and_postgres_identity(stack):
@@ -287,7 +396,7 @@ def test_real_managed_keycloak_token_me_and_postgres_identity(stack):
             "SELECT id, issuer, subject FROM identities WHERE id = %s", (identifier,)
         ).fetchone()
         assert row is not None and row[1] == stack["issuer"]
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0002_platform",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0004_rbac",)
         assert connection.execute(
             "SELECT rolsuper FROM pg_roles WHERE rolname = current_user"
         ).fetchone() == (False,)
@@ -365,7 +474,7 @@ async def test_isolated_realm_authentication_context_is_consistent_for_every_pri
             claims = await verifier.verify(token(stack, "integration-" + label))
             assert claims.get("acr") == "test-step-up", f"Unexpected test ACR for {label}"
             assert type(claims.get("auth_time")) is int
-            assert 0 <= time.time() - claims["auth_time"] <= 900
+            assert 0 <= time.time() - claims["auth_time"] <= 10
             assert claims["sub"] not in subjects
             subjects.add(claims["sub"])
 
@@ -651,15 +760,13 @@ def test_sprint2_platform_user_suspend_restore_and_last_admin_protection(actors)
 @pytest.fixture
 def tenants(actors):
     call = actors["request"]
-    assert (
-        call(
-            "admin",
-            "PATCH",
-            "/platform/settings",
-            json={"company_creation_policy": "open", "max_owned_companies_per_user": 10},
-        ).status_code
-        == 200
+    response = call(
+        "admin",
+        "PATCH",
+        "/platform/settings",
+        json={"company_creation_policy": "open", "max_owned_companies_per_user": 100},
     )
+    assert response.status_code == 200, response.json().get("detail")
     company_ids = {}
     for label in ("alice", "bob"):
         value = call(

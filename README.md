@@ -1,12 +1,14 @@
 # Xarionix Core
 
+Sprint 3: tenant-scoped custom roles, несколько назначений, permission-based authorization, защищённые системные роли и владение, безопасное делегирование, fine-grained PostgreSQL locks и стабильные MFA fixtures. [RBAC/API](docs/rbac.md), [делегирование](docs/permission-delegation.md), [блокировки, benchmark и upgrade](docs/transaction-locking.md), [контракт модулей](docs/module-permission-contract.md), [проверки Sprint 3](docs/sprint-3-validation.md).
+
 Sprint 2: глобальные профили, явный human/service-допуск, компании и owner/admin/member memberships, заявки, сотрудники, одноразовые приглашения, Platform Admin, транзакционный аудит. [Модель и API](docs/users-and-companies.md), [администрирование и обязательная настройка MFA](docs/platform-administration.md), [изоляция](docs/tenant-isolation.md), [проверки](docs/sprint-2-validation.md).
 
 Sprint 1.1: исправлены Docker mounts; добавлены GitLab CI/CD, реальные изолированные integration tests, coverage и security/image gates. Настройка runners и release policy — [docs/ci-cd.md](docs/ci-cd.md). CI не выполняет автоматический production deployment.
 
 Самостоятельное платформенное ядро Xarionix ERP/OSS/BSS. Sprint 1: безопасный FastAPI resource server, внутренняя UUID-идентичность, PostgreSQL/Alembic, Keycloak, HTTPS reverse proxy и установщик RU/EN.
 
-Core **не зависит** от ERP, Web или Billing. Их код, авторизация и данные сюда не перенесены. Нет локальных паролей, собственной выдачи пользовательских токенов, полноценного permission-based RBAC, Billing или Angular UI. Проверенный токен ещё не означает human-допуск или административные полномочия.
+Core **не зависит** от ERP, Web или Billing. Их код, авторизация и данные сюда не перенесены. Нет локальных паролей, собственной выдачи пользовательских токенов, Billing или Angular UI. Проверенный токен ещё не означает human-допуск или административные полномочия.
 
 ## Быстрый запуск разработки
 
@@ -67,6 +69,7 @@ python3 -m scripts.setup validate --env-file deployment.env --language ru
 | `GET /api/v1/me` | Bearer JWT | Внутренний UUID, проверенные issuer и subject |
 | `PATCH /api/v1/me`, `/api/v1/companies`, `/api/v1/company-requests` | Явно допущенный human | Профиль, создание и заявки по глобальной политике |
 | `/api/v1/companies/{id}/members`, `/employees`, `/invitations` | Активное company membership + действие | Company-scoped бизнес-операции |
+| `/api/v1/companies/{id}/roles`, `/members/{id}/roles`, `/me/permissions` | Текущие company permissions | Роли, назначения, effective permissions |
 | `/api/v1/platform/*` | Явный Platform Admin + настроенный свежий MFA context | Политики, заявки, admin grants, безопасные метаданные и аудит; не обход company access |
 | `GET /api/v1/system/info` | Bearer JWT | Только продукт и версии API/приложения |
 
@@ -91,4 +94,4 @@ XARIONIX_RUN_DOCKER_TESTS=1 .venv/bin/pytest tests/integration -vv
 
 ## Следующие этапы
 
-Sprint 3: permission-based RBAC поверх централизованного authorization layer, более тонкие блокировки и операционные политики. Затем контракты модулей/SDK и отдельная миграция ERP/Web. Org hierarchy, payroll, SMTP, frontend и module runtime в Sprint 2 не реализованы.
+Sprint 4: проверенный package/module lifecycle, `.xpkg`/SDK и отдельная machine authorization. Модули не получают прямой доступ к Core DB. Org hierarchy, payroll, SMTP и frontend отложены. До production upgrade прочтите [maintenance migration guide](docs/transaction-locking.md#upgrade-sprint-2--sprint-3); readiness требует `0004_rbac`. `make locking-benchmark` измеряет DB critical section на disposable 0002 → 0003, не обращаясь к рабочим volumes.

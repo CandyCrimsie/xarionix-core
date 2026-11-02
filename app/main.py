@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
+from app.api.v1.rbac import router as rbac_router
 from app.api.v1.routes import router
 from app.api.v1.tenants import router as tenants_router
 from app.core.config import Settings
@@ -79,7 +80,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=config.cors_origins,
-            allow_methods=["GET", "POST", "PATCH", "DELETE"],
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
             allow_headers=["Authorization", "Content-Type"],
             allow_credentials=False,
         )
@@ -125,4 +126,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(router)
     app.include_router(tenants_router)
+    app.include_router(rbac_router)
     return app

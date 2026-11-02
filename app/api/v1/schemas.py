@@ -199,6 +199,14 @@ class InvitationCreate(DTO):
     expires_in_hours: int = Field(default=72, ge=1, le=168, strict=True)
     recipient_user_id: UUID | None = None
     recipient_email: str | None = Field(default=None, max_length=254)
+    role_ids: list[UUID] = Field(default_factory=list, max_length=20)
+
+    @field_validator("role_ids")
+    @classmethod
+    def unique_roles(cls, value: list[UUID]) -> list[UUID]:
+        if len(set(value)) != len(value):
+            raise ValueError("Duplicate roles")
+        return value
 
     @field_validator("recipient_email")
     @classmethod

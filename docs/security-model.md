@@ -14,6 +14,8 @@ TLS context использует доверенное системное CA-хр
 
 ## Пользователи и полномочия
 
+Sprint 3 использует [permission-based engine](rbac.md) и [grantability](permission-delegation.md), не статический action→roles mapping. Неизвестные, wildcard, inactive permissions/roles/namespaces не дают доступ. Owner и Platform Admin — защищённые отдельные authority boundaries. Изменения роли, назначения, delegation и invitation проходят company transaction lock и повторную проверку текущих прав; audit записывается атомарно. Protected системные definitions и compatibility assignments защищены PostgreSQL triggers.
+
 Identity UUID связан только с `(issuer, subject)` и явным User FK. Нет email auto-linking, автосоздания администратора, локального password hash или собственного OAuth server. `/me` создаёт unclassified principal и профиль, но не права. Company API требует явного human-допуска, active User, company Membership, разрешённого действия и состояния компании. Статус service не даёт human-возможностей. Role из client header/JWT realm не учитывается. Подробности — [tenant-isolation.md](tenant-isolation.md).
 
 Platform Admin хранится отдельно от Membership. Его чувствительный HTTP API требует настроенного exact ACR и свежего auth_time; пустая/отсутствующая/неподтверждённая политика запрещает доступ. Настройки хранятся в PostgreSQL; bootstrap/recovery — только offline operator CLI с существующим Identity UUID и аудитом. Platform Admin не получает скрытого доступа к company employees/invitations/members. Последний active owner/admin защищён от конкурентных снятий.
@@ -45,3 +47,18 @@ Bootstrap Keycloak master admin — временный администрати�
 `make security`: Bandit + `pip-audit --strict` по runtime lock. `make lint/typecheck/test`: Ruff, Mypy, pytest и shell syntax checks. Точечные Bandit exceptions у deployment subprocess обоснованы fixed executable argv без shell. Container image scanning и проверка SBOM/signatures выполняются вашей CI; digest защищает от незаметной замены тега, но сам по себе не доказывает отсутствие уязвимостей.
 
 Первый спринт не заменяет внешний security review, pentest, резервное копирование и проверку восстановления.
+
+## Разделение migration/runtime DB roles — оценка и rollout
+
+В Sprint 3 автоматическое разделение credentials **не выполняется**. Текущий `core_app` уже владеет business tables/functions и используется both migrate/Core в существующих volumes. Одной Alembic revision/замены `.env` недостаточно: смена ownership может лишить текущий migrate доступа, а смена password в env не меняет существующую SQL role. Без отдельного согласованного maintenance rollout это риск потери управляемости работающей установки.
+
+Конкретный следующий rollout:
+
+1. Backup/restore rehearsal; inventory владельцев всех таблиц, sequences, функций, schema, Alembic и default privileges. Проверить версии triggers и extensions на копии существующей DB.
+2. Создать отдельную NOLOGIN schema-owner role, отдельную LOGIN migration role (с контролируемым SET ROLE owner) и оставить runtime LOGIN без membership в owner/migrator. Secrets хранятся отдельно в operator secret store.
+3. Под maintenance перенести ownership **явного списка Core objects** к schema-owner; не выполнять необдуманный cluster-wide REASSIGN OWNED. Отозвать CREATE в schema/public и ALTER/DROP у runtime. Runtime получает только CONNECT/USAGE и минимальные SELECT/INSERT/UPDATE/DELETE на business tables; audit — SELECT/INSERT, каталог — SELECT.
+4. Для автоматического seed/sync системных ролей потребуется reviewed SECURITY DEFINER вариант с закреплённым `search_path=pg_catalog,...`, владельцем schema-owner и REVOKE PUBLIC EXECUTE либо минимальные DML grants, сохраняющие нынешние guards. Не ставить SECURITY DEFINER на произвольный registrar. Отдельно протестировать PG function/trigger permissions под runtime role.
+5. Разделить Compose/installer настройки Core runtime и migrate, выполнить upgrade от migration credentials, runtime smoke/tenant/concurrency/direct-DML negative tests, затем включить трафик. Проверить, что runtime не может DISABLE TRIGGER, ALTER TABLE/FUNCTION, TRUNCATE audit/catalog или менять system definitions.
+6. Rollback: остановить writes, восстановить проверенные ownership/grants/secrets либо backup; не удалять volumes и не менять рабочие passwords автоматически.
+
+Это документированный следующий hardening, не заявленная гарантия Sprint 3. До rollout сервер/DB operator и текущие owner credentials остаются доверенными. Company admin/будущий модуль этих credentials не получает.

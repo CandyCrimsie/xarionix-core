@@ -9,13 +9,11 @@ from app.domains.users.model import User
 
 
 async def identity_in_transaction(session: AsyncSession, issuer: str, subject: str) -> Identity:
-    # Identity JIT takes the SAME mutation gate before the keyed lock. This avoids
-    # lock-order inversions with first login + company/admin mutations.
+    # Only missing identities contend on this issuer+subject transaction lock.
     query = select(Identity).where(Identity.issuer == issuer, Identity.subject == subject)
     existing = await session.scalar(query)
     if existing is not None:
         return existing
-    await session.execute(text("SELECT id FROM platform_settings WHERE id=1 FOR UPDATE"))
     key = int.from_bytes(hashlib.sha256((issuer + "\0" + subject).encode()).digest()[:8], signed=True)
     await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
     identity = await session.scalar(

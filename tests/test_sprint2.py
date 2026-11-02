@@ -1,4 +1,3 @@
-import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
@@ -9,7 +8,7 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1 import schemas
-from app.core import access
+from app.core import access, locking
 from app.domains.audit.model import AuditEvent
 from app.domains.companies import service as companies
 from app.domains.companies.model import Company
@@ -31,6 +30,9 @@ def ctx(settings):
     load_models()
     session = MagicMock(spec=AsyncSession)
     session.scalar = AsyncMock()
+    scalar_result = MagicMock()
+    scalar_result.all.return_value = []
+    session.scalars = AsyncMock(return_value=scalar_result)
     session.get = AsyncMock()
     session.flush = AsyncMock()
     session.execute = AsyncMock()
@@ -64,8 +66,9 @@ def ctx(settings):
         identity,
         user,
         settings.model_copy(update={"admin_acr_values": ["test-step-up"]}),
-        {"acr": "test-step-up", "auth_time": time.time()},
+        {"acr": "test-step-up", "auth_time": 1000},
         "test-correlation-123",
+        clock=lambda: 1000,
     )
 
 
@@ -80,6 +83,12 @@ def allowed(ctx, monkeypatch):
     actor = Membership(
         id=uuid.uuid4(), company_id=company.id, user_id=ctx.user.id, role="owner", status="active"
     )
+    monkeypatch.setattr(locking, "policy", AsyncMock(return_value=settings))
+    monkeypatch.setattr(locking, "quota", AsyncMock())
+    monkeypatch.setattr(locking, "company", AsyncMock())
+    monkeypatch.setattr(invitations.authorization, "require", AsyncMock())
+    monkeypatch.setattr(invitations.authorization, "require_grantable", AsyncMock())
+    monkeypatch.setattr(invitations, "invitation_permissions", AsyncMock(return_value={"core.company.read"}))
     for module in (companies, employees, invitations, memberships, platform):
         if hasattr(module, "mutation_gate"):
             monkeypatch.setattr(module, "mutation_gate", AsyncMock(return_value=settings))
@@ -110,12 +119,12 @@ def test_suspended_user_fails_even_with_a_verified_jwt(ctx):
     [
         {},
         {"acr": "test-step-up"},
-        {"acr": "1", "auth_time": time.time()},
+        {"acr": "1", "auth_time": 1000},
         {"acr": "bogus", "auth_time": 0},
         {"acr": "test-step-up", "auth_time": True},
         {"acr": "test-step-up", "auth_time": float("nan")},
-        {"acr": "test-step-up", "auth_time": time.time() - 1000},
-        {"acr": "test-step-up", "auth_time": time.time() + 1000},
+        {"acr": "test-step-up", "auth_time": 0},
+        {"acr": "test-step-up", "auth_time": 2000},
     ],
 )
 def test_mfa_does_not_trust_missing_arbitrary_stale_or_boolean_claims(ctx, claims):
@@ -152,6 +161,7 @@ async def test_company_scope_and_roles_have_no_platform_bypass(ctx):
     ctx.session.scalar.return_value = member
     company = Company(id=company_id, status="active")
     ctx.session.get.return_value = company
+    ctx.session.scalars.return_value.all.return_value = ["core.company.read", "core.employees.read"]
     assert (await access.require_company(ctx, company_id, "employees.read"))[1] is member
     with pytest.raises(HTTPException, match="company_permission_denied"):
         await access.require_company(ctx, company_id, "employees.manage")
@@ -269,14 +279,14 @@ async def test_request_lifecycle_rejects_replay_and_foreign_cancellation(ctx, al
 
 async def test_last_owner_and_role_escalation_are_blocked(ctx, allowed):
     _, company, actor = allowed
-    ctx.session.scalar.side_effect = [actor, 1]
+    ctx.session.scalar.side_effect = [actor, actor, 1]
     with pytest.raises(HTTPException, match="last_company_owner"):
         await memberships.update_member(ctx, company.id, actor.id, status="removed")
     actor.role = "admin"
     target = Membership(
         id=uuid.uuid4(), company_id=company.id, user_id=uuid.uuid4(), role="owner", status="active"
     )
-    ctx.session.scalar.side_effect = [target]
+    ctx.session.scalar.side_effect = [target, target]
     with pytest.raises(HTTPException, match="owner_required"):
         await memberships.update_member(ctx, company.id, target.id, role="member")
 
@@ -286,7 +296,7 @@ async def test_transfer_changes_both_ends_and_audits(ctx, allowed):
     target = Membership(
         id=uuid.uuid4(), company_id=company.id, user_id=uuid.uuid4(), role="member", status="active"
     )
-    ctx.session.scalar.side_effect = [target, 0]
+    ctx.session.scalar.side_effect = [target, target, 0]
     await memberships.transfer(ctx, company.id, target.id)
     assert actor.role == "admin" and target.role == "owner"
     assert any(row.action == "ownership.transferred" for row in ctx.session.added)
@@ -350,8 +360,8 @@ async def test_invitation_acceptance_checks_recipient_expiry_and_existing_access
     with pytest.raises(HTTPException, match="verified_recipient_email_required"):
         await invitations.accept(ctx, company.id, "opaque-secret")
     ctx.claims["email_verified"] = True
-    ctx.session.get.return_value = company
-    ctx.session.scalar.side_effect = [invitation, actor, None]
+    ctx.session.get.side_effect = lambda model, *args, **kwargs: company if model is Company else ctx.user
+    ctx.session.scalar.side_effect = [invitation, actor, ctx.identity, None]
     member = await invitations.accept(ctx, company.id, "opaque-secret")
     assert member.status == "active" and invitation.status == "accepted"
     ctx.session.scalar.side_effect = None
@@ -504,7 +514,7 @@ async def test_operator_bootstrap_is_explicit_audited_and_idempotent(
     engine.dispose = AsyncMock()
     monkeypatch.setattr(platform_admin, "Settings", lambda: ctx.config)
     monkeypatch.setattr(platform_admin, "create_database", lambda config: (engine, sessions))
-    monkeypatch.setattr(platform_admin, "mutation_gate", AsyncMock())
+    monkeypatch.setattr(platform_admin.locking, "administration", AsyncMock())
     monkeypatch.setattr(platform_admin, "human_user", AsyncMock(return_value=ctx.user))
     arguments = argparse.Namespace(
         command=operation,

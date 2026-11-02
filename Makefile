@@ -1,4 +1,4 @@
-.PHONY: install-dev validate lint typecheck test security check compose-check dev-config dev-up dev-down dev-status dev-logs dev-test integration-test docker-build docker-scan
+.PHONY: install-dev validate lint typecheck test security check compose-check dev-config dev-up dev-down dev-status dev-logs dev-test integration-test locking-benchmark docker-build docker-scan
 PYTHON ?= python3
 IMAGE ?= xarionix-core:local
 DEV_COMPOSE = docker compose --env-file .env.dev -f compose.dev.yaml
@@ -40,6 +40,8 @@ dev-test:
 integration-test:
 	.venv/bin/python -m scripts.ci preflight
 	XARIONIX_RUN_DOCKER_TESTS=1 .venv/bin/pytest -vv -m integration --junitxml=reports/integration.xml
+locking-benchmark:
+	XARIONIX_RUN_DOCKER_TESTS=1 XARIONIX_RUN_LOCK_BENCHMARKS=1 .venv/bin/pytest tests/integration/test_managed_stack.py -vv -k preserves_legacy_identity
 docker-build:
 	.venv/bin/python -m scripts.ci preflight
 	.venv/bin/python -m scripts.ci build --image $(IMAGE)

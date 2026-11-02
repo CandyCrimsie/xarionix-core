@@ -21,6 +21,8 @@ Bootstrap допускается только при отсутствии active
 
 ## Обязательная IdP-политика MFA
 
+В Sprint 3 `Context.clock` позволяет детерминированные unit boundaries без sleep. Integration fixture обновляет только свой test-only auth_time mapper перед выдачей JWT, а не увеличивает max age и не заменяет его `iat`. Signature/issuer/audience/expiry/subject/ACR/auth_time проверяются настоящими JWT. Это synthetic enforcement, **не** пользовательское MFA. Нужны согласованные часы host/Docker/IdP; preflight отдельно проверяет фактические подписанные claims до административных сценариев.
+
 По умолчанию `XARIONIX_ADMIN_ACR_VALUES=[]`: **весь Platform HTTP API закрыт**, даже после bootstrap. Это безопасный результат отсутствующей настройки, не ошибка, которую нужно обходить фиктивным claim.
 
 Оператор Keycloak должен настроить и проверить реальный step-up flow: нужный уровень ACR должен достигаться только после требуемого MFA, включая правильные LoA/ACR mappings, max age и session/token refresh поведение. Добавьте проверяемые `acr` и `auth_time` в **access token**, не только ID token. Убедитесь, что вход без второго фактора не выдаёт этот ACR. См. [Keycloak authentication flows](https://www.keycloak.org/docs/latest/server_admin/index.html#_authentication-flows), [RFC 9470](https://www.rfc-editor.org/rfc/rfc9470.html).
@@ -35,6 +37,17 @@ XARIONIX_ADMIN_AUTH_MAX_AGE_SECONDS=300
 Пример не настраивает IdP сам по себе. Hardcoded claim mapper, `realm-admin` role, наличие токена или свежий `iat` не являются MFA. Core проверяет exact ACR и конечный числовой auth_time, не boolean/NaN, свежесть 30–900 секунд по настройке и допустимое отклонение часов. Нужен NTP. Старый auth_time нельзя заменить временем выдачи access token. Неизвестный/отсутствующий context даёт 403 `configured_recent_mfa_required`; JWT по-прежнему обязан пройти signature/issuer/audience/expiry/typ.
 
 Managed provisioning не объявляет обычный вход прошедшим MFA и не переписывает существующий realm. Настройка production MFA требует настоящего IdP и пользователя; её нельзя подтвердить тестовым hardcoded context. Integration fixtures используют отдельный disposable test realm с явно тестовыми claims только для проверки enforcement, не как доказательство реальной MFA.
+
+### Ручная проверка настоящего step-up
+
+Полноценный human MFA E2E не автоматизирован: в проекте нет браузерного OIDC-клиента/OTP/WebAuthn runner. Тестовый service-account flow не выдаётся за него. На отдельном staging realm настройте реальный browser step-up с OTP/WebAuthn и защищённый ACR mapping. Не добавляйте hardcoded MFA claims production client.
+
+1. Вход через Authorization Code + PKCE без второго фактора: убедиться, что privileged ACR не выдан и Core platform endpoint возвращает 403.
+2. Явный step-up с настоящим вторым фактором: проверить подписанный access token, issuer/audience, требуемый ACR и соответствующий auth_time; ожидается разрешение только для уже назначенного Platform Admin.
+3. Дождаться max authentication age, обновить обычный access token без MFA: свежий `iat` со старым auth_time должен дать 403. Повторный реальный step-up возвращает доступ.
+4. Проверить отказ при отсутствующем/неподходящем ACR, удалении grant и suspension User. Не помещать JWT/OTP secrets в отчёты, shell history или CI artifacts.
+
+Эта ручная процедура ещё не выполнена автоматически в локальном Core; production IdP flow должен отдельно подтвердить администратор.
 
 ## API
 

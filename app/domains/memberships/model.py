@@ -12,6 +12,7 @@ class Membership(Timestamps, Base):
     __tablename__ = "memberships"
     __table_args__ = (
         UniqueConstraint("company_id", "user_id", name="uq_membership_company_user"),
+        UniqueConstraint("company_id", "id", name="uq_membership_company_id"),
         CheckConstraint("role IN ('owner','admin','member')", name="ck_membership_role"),
         CheckConstraint("status IN ('active','suspended','removed')", name="ck_membership_status"),
     )
