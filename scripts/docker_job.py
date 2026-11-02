@@ -206,6 +206,15 @@ def inner(job: str) -> None:
 
                 check(nginx=True)
             case "integration":
+                # The toolbox contains locked dependencies, not this checkout's distribution.
+                # Install after source transfer so importlib.metadata sees the current project
+                # (including app.version), just like make install-dev and the Python CI jobs.
+                log("Installing current Core checkout into the CI test environment (without dependencies)")
+                command(
+                    [sys.executable, "-m", "pip", "install", "--no-deps", "--editable", "."],
+                    capture=False,
+                    timeout=120,
+                )
                 os.environ["XARIONIX_RUN_DOCKER_TESTS"] = "1"
                 command(
                     [

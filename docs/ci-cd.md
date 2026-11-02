@@ -74,6 +74,25 @@ sudo python3 scripts/configure_docker_runner.py --path /srv/gitlab-runner/config
 4. Controller использует socket **только rootless service** `/run/user/1000/docker.sock` и `--network host` **только внутри DinD namespace**. Это не socket и не host network физической VM; `localhost` остаётся внутри данного job. Внешнее соединение по TCP остаётся с TLS.
 5. Возвращает только allowlisted regular artifacts (`reports`/`dist`), запрещает links/path traversal и удаляет собственный controller/volume. Job teardown уничтожает отдельный DinD service. Нет global prune.
 
+Перед сбором integration-тестов controller устанавливает **текущий переданный checkout**:
+`python -m pip install --no-deps --editable .`. Toolbox содержит только locked dependencies,
+а не метаданные самого `xarionix-core`; без этого `app.version` не может получить версию
+через `importlib.metadata` и pytest завершается с `PackageNotFoundError` до запуска стека
+(job 153). Runtime-зависимости не обновляются; build backend закреплён в `pyproject.toml`.
+Ошибка установки блокирует тесты и сохраняет штатный cleanup. Версия не подменяется
+fallback-значением. Локальный `make install-dev` и `.python` jobs уже выполняют такую установку.
+После отправки исправления нужен pipeline нового commit SHA: retry job старого commit
+продолжит выполнять старый CI-код. Настройки Runner и существующие volumes менять не нужно.
+
+Проверка исправления job 153 (02.11.2026): 448 unit/API tests прошли как на локальном
+Python 3.12, так и в чистом Linux arm64 toolbox с Python 3.13.18; локальный coverage — 75.09%.
+В toolbox без установленного проекта отдельно воспроизведён `PackageNotFoundError`, затем
+тот же `inner("integration")` с новым install-шагом успешно собрал все 87 integration-тестов
+(`--collect-only`, без Docker socket). Полный `make integration-test` отдельно прошёл на
+Docker Desktop: **87 passed**, 367.04s, настоящие PostgreSQL/Keycloak/CAS и изолированные volumes.
+Ruff/format/MyPy/shell, repository validation, Bandit и `git diff --check` также прошли.
+Новый pipeline на Linux amd64 GitLab Runner после исправления пока не запускался.
+
 Нужны Linux user namespaces, совместимый Docker executor, BuildKit/Compose, доступ к OS/PyPI/image registries и Trivy DB. Ориентир для полного стека — 4 vCPU, 8 GB RAM, 20+ GB свободного диска. Текущий Runner меньше; при нехватке ресурсов расширяйте VM, а не пропускайте integration. Его `concurrent=1` также предотвращает конкуренцию за persistent client cert volume. Не увеличивайте concurrency без отдельной проверки изоляции certificates/cache между jobs. Rootless DinD может не иметь cgroup delegation: лимиты всего service задаются на executor, на внутренние per-container limits полагаться нельзя.
 
 Release также получает **новый изолированный DinD daemon**, а не общий persistent build daemon. Это не отдельная release VM и не полная граница против выхода на Runner-хост. Для недоверенных fork MR предпочтительны отдельные ephemeral VM и отдельный protected release runner; production credentials не передаются. Не предоставляйте protected variables/runners недоверенному MR.

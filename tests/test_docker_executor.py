@@ -211,8 +211,15 @@ def test_inner_dispatch_keeps_real_checks_including_scan_of_final_image(tmp_path
     monkeypatch.setattr(compose_check, "check", lambda **kwargs: calls.append("nginx"))
 
     def command(arguments, **kwargs):
-        assert "--basetemp=.ci-tmp/pytest" in arguments
-        calls.append("pytest")
+        assert arguments[0] == job.sys.executable
+        if arguments[1:3] == ["-m", "pip"]:
+            assert arguments[3:] == ["install", "--no-deps", "--editable", "."]
+            assert kwargs == {"capture": False, "timeout": 120}
+            calls.append("install-project")
+        else:
+            assert arguments[1:3] == ["-m", "pytest"]
+            assert "--basetemp=.ci-tmp/pytest" in arguments
+            calls.append("pytest")
 
     monkeypatch.setattr(job, "command", command)
     job.inner(kind)
@@ -222,9 +229,28 @@ def test_inner_dispatch_keeps_real_checks_including_scan_of_final_image(tmp_path
         "scan": ["build", "trivy"],
         "build": ["build", "image_check", "trivy", "export_image"],
         "publish": ["publish"],
-        "integration": ["pytest", "cleanup_tests"],
+        "integration": ["install-project", "pytest", "cleanup_tests"],
     }
     assert calls == expected[kind]
+
+
+def test_integration_install_failure_stops_collection_and_still_cleans_own_resources(tmp_path, monkeypatch):
+    from scripts import ci
+
+    monkeypatch.setattr(job, "ROOT", tmp_path)
+    monkeypatch.setenv("CI_JOB_ID", "123")
+    calls = []
+
+    def command(arguments, **kwargs):
+        assert arguments[1:4] == ["-m", "pip", "install"]
+        calls.append("install-project")
+        raise RuntimeError("Project installation failed")
+
+    monkeypatch.setattr(job, "command", command)
+    monkeypatch.setattr(ci, "cleanup_tests", lambda: calls.append("cleanup_tests"))
+    with pytest.raises(RuntimeError, match="Project installation failed"):
+        job.inner("integration")
+    assert calls == ["install-project", "cleanup_tests"]
 
 
 CONFIG = """concurrent = 1
