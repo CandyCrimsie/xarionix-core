@@ -191,6 +191,17 @@ def test_gitlab_pipeline_has_mandatory_gates_and_no_deployment():
     assert docker_job["variables"]["FF_NETWORK_PER_BUILD"] == "1"
 
 
+@pytest.mark.parametrize("lockfile", ["requirements.lock", "requirements-dev.lock"])
+def test_dependency_audits_use_explicit_socket_timeout_without_weakening_security(lockfile):
+    config = validate.load_yaml(ROOT / ".gitlab-ci.yml")
+    security = config["security:python"]
+    expected = f".venv/bin/pip-audit -r {lockfile} --strict --timeout 60 --progress-spinner off"
+    assert expected in security["script"]
+    assert "\t" + expected in (ROOT / "Makefile").read_text().splitlines()
+    assert not security.get("allow_failure")
+    assert "retry" not in security  # Do not retry every script failure, including vulnerability findings.
+
+
 def test_oci_source_supports_self_hosted_gitlab_but_never_credentials(monkeypatch):
     monkeypatch.setenv("CI_COMMIT_SHA", "a" * 40)
     monkeypatch.setenv("CI_COMMIT_TIMESTAMP", "2026-11-01T00:00:00Z")

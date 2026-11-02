@@ -166,6 +166,23 @@ Coverage измеряется по `app` и `scripts`, включая installer/
 
 `Bandit` и `pip-audit --strict` проверяют Python; аудитируются оба lock-файла, runtime и dev. Pinned Trivy 0.76.1 проверяет HIGH/CRITICAL уязвимости Core Docker image (включая unfixed, без broad ignore). Ошибка загрузки DB/запуска scanner тоже блокирует job. Scanner читает image archive, а не Docker socket или production `.env`. Данные проекта не отправляются в облачный анализатор: скачивается публичная vulnerability DB, анализ локален. Эта проверка не означает, что отдельно просканированы все инфраструктурные и CI images.
 
+Для обоих `pip-audit` в GitLab и `make security` явно задан `--timeout 60`
+(socket timeout вместо стандартных 15 секунд) и выключен progress spinner.
+Job 163 остановился на `requests.exceptions.ConnectionError: ... pypi.org ... Read timed out`
+во время dev audit: Bandit и runtime audit уже прошли, но dev audit не был завершён.
+Это ошибка получения данных, а не отчёт об обнаруженной уязвимости. Увеличенный timeout
+не отключает TLS/`--strict`, не исключает зависимости и не превращает сетевую ошибку в success.
+Нет blanket retry для `script_failure`, `allow_failure` или `--ignore-vuln`.
+При повторном timeout проверьте доступ Runner к `pypi.org` и `files.pythonhosted.org` через HTTPS,
+DNS/прокси/исходящий firewall; не отключайте проверку сертификатов.
+Для временного сетевого сбоя допустим Retry того же job. Для применения новых аргументов
+CI нужен pipeline нового commit SHA. Остальные проверки не требуется переписывать.
+
+Локально 03.11.2026 выполнены `make security` (Bandit и оба audit прошли,
+`No known vulnerabilities found`) и `make validate lint typecheck test`
+(450 unit/API tests, coverage 75.09%, без ошибок lint/typecheck/validation).
+Это не результат повторного запуска job на GitLab Runner; удалённый pipeline не запускался.
+
 Trivy получает `--timeout 12m` при внешнем Docker deadline 15 минут: его штатные 5 минут включают первую загрузку vulnerability DB (более 131 MiB) и могут закончиться до начала анализа при медленной сети. Progress bar отключён; сетевые ошибки не становятся успешным scan, предыдущий JSON удаляется перед новым запуском. Нужен доступ к публичному DB mirror, скрытого перехода к старым результатам нет.
 
 Gitleaks 8.30.1 сканирует Git и snapshot неигнорируемого working tree без сети; findings редактируются `--redact=100`. `.gitleaks.toml` сохраняет default rules. Единственное исключение — **точный** внутренний PostgreSQL JDBC endpoint из двух Compose-файлов на фиксированных paths (и в самом описании исключения): generic-api-key ошибочно воспринимает `port/database` как credential. Это не пароль/username и не отключение правила. Не добавляйте baseline suppression для настоящих secrets; удалите/ротируйте найденный секрет и разберите историю.

@@ -20,8 +20,8 @@ test:
 	.venv/bin/pytest -vv -m "not integration" --junitxml=reports/unit.xml --cov=app --cov=scripts --cov-report=term-missing --cov-report=xml:reports/coverage.xml --cov-fail-under=70
 security:
 	.venv/bin/bandit -q -r app scripts
-	.venv/bin/pip-audit -r requirements.lock --strict
-	.venv/bin/pip-audit -r requirements-dev.lock --strict
+	.venv/bin/pip-audit -r requirements.lock --strict --timeout 60 --progress-spinner off
+	.venv/bin/pip-audit -r requirements-dev.lock --strict --timeout 60 --progress-spinner off
 check: validate lint typecheck test security compose-check
 compose-check:
 	.venv/bin/python -m scripts.compose_check
