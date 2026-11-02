@@ -1,0 +1,16 @@
+# Demonstration outbound-only agent. Supply a dedicated mode-600 env file explicitly.
+services:
+  agent:
+    image: ${XARIONIX_AGENT_IMAGE:-xarionix-core:sprint-4a}
+    command: [python, -m, scripts.module_agent]
+    user: "10001:10001"
+    environment:
+      XARIONIX_AGENT_CORE_URL: ${XARIONIX_AGENT_CORE_URL:?}
+      XARIONIX_AGENT_ISSUER: ${XARIONIX_AGENT_ISSUER:?}
+      XARIONIX_AGENT_CLIENT_ID: ${XARIONIX_AGENT_CLIENT_ID:?}
+      XARIONIX_AGENT_CLIENT_SECRET: ${XARIONIX_AGENT_CLIENT_SECRET:?}
+      XARIONIX_AGENT_INSTANCE_ID: ${XARIONIX_AGENT_INSTANCE_ID:?}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: "no"

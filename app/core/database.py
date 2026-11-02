@@ -23,6 +23,8 @@ def create_database(settings: Settings) -> tuple[AsyncEngine, async_sessionmaker
     engine = create_async_engine(
         url,
         pool_pre_ping=True,
+        pool_size=5,
+        max_overflow=10,
         hide_parameters=True,
         echo=False,
         pool_timeout=5,
@@ -35,6 +37,6 @@ async def database_ready(engine: AsyncEngine) -> bool:
     try:
         async with asyncio.timeout(6), engine.connect() as connection:
             revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            return bool(revision == "0004_rbac")
+            return bool(revision == "0005_module_control")
     except Exception:
         return False

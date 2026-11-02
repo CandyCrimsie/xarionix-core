@@ -1,5 +1,9 @@
 # Модель безопасности
 
+## Machine boundary Sprint 4A
+
+Отдельный JWT audience/purpose и registry binding issuer/sub/azp отделяют machine от human/JIT. Company machine scope не Membership. Статус service/instance проверяется в PostgreSQL на каждом запросе; revoke действует после COMMIT без ожидания JWT expiry. Лишь Platform Admin с существующей MFA-policy регистрирует/отзывает доверие и ставит команды. Нет публичного self-registration, SSRF/callback URL, shell execution или Core DB credentials в агенте. Полный [threat model](module-threat-model.md), [auth contract](service-authentication.md) и [delivery semantics](module-control-channel.md).
+
 ## Доверие и отказ
 
 JWT принимается только из `Authorization: Bearer`. Единственный issuer задаёт администратор. Разрешённые алгоритмы по умолчанию — RS256; поддерживаемый явный allowlist: RS256/384/512 и ES256. `none`, HMAC, ключи из JWT (`jku`, `jwk`, `x5u`) и неизвестные critical headers отклоняются.
@@ -49,6 +53,8 @@ Bootstrap Keycloak master admin — временный администрати�
 Первый спринт не заменяет внешний security review, pentest, резервное копирование и проверку восстановления.
 
 ## Разделение migration/runtime DB roles — оценка и rollout
+
+В Sprint 4A приведённый ниже rollout **проверен на новой disposable базе**: transfer существующих 0004 objects к NOLOGIN owner, отдельный migrator выполняет реальный upgrade 0005, runtime не может ALTER/DISABLE TRIGGER/catalog DML/audit DELETE/TRUNCATE/TEMP/SET ROLE, но выполняет JIT/company/custom-role/employee/machine heartbeat API. Штатные dev/prod credentials/ownership автоматически не менялись. [Репетиция и границы](sprint-4a-validation.md). Read-only audit `python -m scripts.db_privileges` выводит только permission booleans, без секретов.
 
 В Sprint 3 автоматическое разделение credentials **не выполняется**. Текущий `core_app` уже владеет business tables/functions и используется both migrate/Core в существующих volumes. Одной Alembic revision/замены `.env` недостаточно: смена ownership может лишить текущий migrate доступа, а смена password в env не меняет существующую SQL role. Без отдельного согласованного maintenance rollout это риск потери управляемости работающей установки.
 

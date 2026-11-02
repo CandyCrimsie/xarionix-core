@@ -36,6 +36,10 @@ DEFAULTS = {
     "INSTALL_LANGUAGE": "ru",
     "KEYCLOAK_MODE": "managed",
     "OIDC_AUDIENCE": "xarionix-core",
+    "MODULES_AUDIENCE": "xarionix-core-modules",
+    "MODULES_CHECK_IN_SECONDS": "15",
+    "MODULES_STALE_SECONDS": "90",
+    "MODULES_LEASE_SECONDS": "30",
     "DOCS_ENABLED": "false",
     "CORS_ORIGINS": "[]",
     "ADMIN_ACR_VALUES": "[]",
@@ -265,6 +269,20 @@ def validate(config: dict[str, str], *, development: bool = False) -> None:
         )
     if config.get("OIDC_AUDIENCE") != "xarionix-core":
         raise SetupError("invalid", "XARIONIX_OIDC_AUDIENCE")
+    if not re.fullmatch(
+        r"[A-Za-z0-9._:-]{1,120}", config.get("MODULES_AUDIENCE", "xarionix-core-modules")
+    ) or config.get("MODULES_AUDIENCE") == config.get("OIDC_AUDIENCE"):
+        raise SetupError("invalid", "XARIONIX_MODULES_AUDIENCE")
+    try:
+        interval = int(config.get("MODULES_CHECK_IN_SECONDS", "15"))
+        stale = int(config.get("MODULES_STALE_SECONDS", "90"))
+        lease = int(config.get("MODULES_LEASE_SECONDS", "30"))
+        if not (1 <= interval <= 120 and max(10, 2 * interval) <= stale <= 900 and 5 <= lease <= 120):
+            raise ValueError()
+    except ValueError:
+        raise SetupError(
+            "invalid", "XARIONIX_MODULES_CHECK_IN_SECONDS/MODULES_STALE_SECONDS/MODULES_LEASE_SECONDS"
+        ) from None
     if config.get("DOCS_ENABLED") not in {"true", "false"}:
         raise SetupError("invalid", "XARIONIX_DOCS_ENABLED")
     try:

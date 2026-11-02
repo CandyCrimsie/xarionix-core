@@ -145,6 +145,52 @@ def stack(tmp_path_factory):
             },
         ]
         realm["clients"].append(client)
+    module_secrets = {name: secrets.token_hex(32) for name in ("module-a", "module-b", "module-unknown")}
+    for name, secret in module_secrets.items():
+        realm["clients"].append(
+            {
+                "clientId": name,
+                "enabled": True,
+                "protocol": "openid-connect",
+                "publicClient": False,
+                "secret": secret,
+                "serviceAccountsEnabled": True,
+                "standardFlowEnabled": False,
+                "directAccessGrantsEnabled": False,
+                "defaultClientScopes": [],
+                "optionalClientScopes": [],
+                "protocolMappers": [
+                    {
+                        "name": "subject",
+                        "protocol": "openid-connect",
+                        "protocolMapper": "oidc-sub-mapper",
+                        "config": {"access.token.claim": "true"},
+                    },
+                    {
+                        "name": "machine-audience",
+                        "protocol": "openid-connect",
+                        "protocolMapper": "oidc-audience-mapper",
+                        "config": {
+                            "included.custom.audience": "xarionix-core-modules",
+                            "access.token.claim": "true",
+                            "id.token.claim": "false",
+                        },
+                    },
+                    {
+                        "name": "machine-purpose",
+                        "protocol": "openid-connect",
+                        "protocolMapper": "oidc-hardcoded-claim-mapper",
+                        "config": {
+                            "claim.name": "xarionix_principal",
+                            "claim.value": "machine",
+                            "jsonType.label": "String",
+                            "access.token.claim": "true",
+                            "id.token.claim": "false",
+                        },
+                    },
+                ],
+            }
+        )
     realm_path = folder / "realm.json"
     setup.atomic_write(realm_path, json.dumps(realm), 0o644)
     definition = yaml.safe_load((ROOT / "compose.dev.yaml").read_text())
@@ -158,6 +204,8 @@ def stack(tmp_path_factory):
             "XARIONIX_OIDC_ISSUER": issuer,
             "XARIONIX_ADMIN_ACR_VALUES": '["test-step-up"]',
             "XARIONIX_ADMIN_AUTH_MAX_AGE_SECONDS": "300",
+            "XARIONIX_MODULES_CHECK_IN_SECONDS": "1",
+            "XARIONIX_MODULES_LEASE_SECONDS": "5",
         }
     services["core"]["ports"] = [f"127.0.0.1:{core_port}:8000"]
     services["postgres"]["ports"] = [f"127.0.0.1:{postgres_port}:5432"]
@@ -170,7 +218,11 @@ def stack(tmp_path_factory):
         service["labels"] = {"io.xarionix.test.job-id": job}
     for volume in definition["volumes"]:
         definition["volumes"][volume] = {"labels": {"io.xarionix.test.job-id": job}}
-    definition["networks"] = {"default": {"labels": {"io.xarionix.test.job-id": job}}}
+    definition["networks"] = {
+        name: {"labels": {"io.xarionix.test.job-id": job}} for name in ("default", "agent")
+    }
+    services["core"]["networks"] = ["default", "agent"]
+    services["keycloak"]["networks"] = ["default", "agent"]
     compose_path, env_path = folder / "compose.yaml", folder / ".env"
     setup.atomic_write(compose_path, yaml.safe_dump(definition))
     setup.atomic_write(env_path, setup.env_text(config))
@@ -179,10 +231,19 @@ def stack(tmp_path_factory):
         key: value for key, value in os.environ.items() if not key.startswith(("XARIONIX_", "COMPOSE_"))
     }
 
-    def execute(arguments, timeout=600):
+    def execute(arguments, timeout=600, extra_environment=None):
+        if extra_environment and set(extra_environment) - {
+            "XARIONIX_DB_USER",
+            "XARIONIX_DB_NAME",
+            "XARIONIX_DB_PASSWORD",
+        }:
+            pytest.fail("Only disposable database override variables are allowed")
         try:
             result = subprocess.run(
-                command + arguments, env=environment, capture_output=True, timeout=timeout
+                command + arguments,
+                env=environment | (extra_environment or {}),
+                capture_output=True,
+                timeout=timeout,
             )
         except (OSError, subprocess.TimeoutExpired):
             pytest.fail(
@@ -309,6 +370,9 @@ def stack(tmp_path_factory):
                 "upgrade_snapshot": snapshot,
                 "authentication_lock": threading.RLock(),
                 "authentication_clients": {},
+                "module_secrets": module_secrets,
+                "agent_network": project + "_agent",
+                "image": "xarionix-core-test:" + project,
             }
         )
     finally:
@@ -396,7 +460,9 @@ def test_real_managed_keycloak_token_me_and_postgres_identity(stack):
             "SELECT id, issuer, subject FROM identities WHERE id = %s", (identifier,)
         ).fetchone()
         assert row is not None and row[1] == stack["issuer"]
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0004_rbac",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            "0005_module_control",
+        )
         assert connection.execute(
             "SELECT rolsuper FROM pg_roles WHERE rolname = current_user"
         ).fetchone() == (False,)

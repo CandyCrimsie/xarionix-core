@@ -5,6 +5,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domains.identity.model import Identity
+from app.domains.modules.model import ModuleService
 from app.domains.users.model import User
 
 
@@ -16,6 +17,12 @@ async def identity_in_transaction(session: AsyncSession, issuer: str, subject: s
         return existing
     key = int.from_bytes(hashlib.sha256((issuer + "\0" + subject).encode()).digest()[:8], signed=True)
     await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
+    if await session.scalar(
+        select(ModuleService.id).where(ModuleService.issuer == issuer, ModuleService.subject == subject)
+    ):
+        from app.core.access import fail
+
+        fail(403, "machine_identity_requires_machine_api")
     identity = await session.scalar(
         select(Identity).where(Identity.issuer == issuer, Identity.subject == subject)
     )

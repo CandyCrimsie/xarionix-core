@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     public_url: str
     oidc_issuer: str = Field(max_length=512)
     oidc_audience: str = Field(default="xarionix-core", min_length=1, max_length=120)
+    modules_audience: str = Field(
+        default="xarionix-core-modules", min_length=1, max_length=120, pattern=r"^[A-Za-z0-9._:-]+$"
+    )
+    modules_check_in_seconds: int = Field(default=15, ge=1, le=120)
+    modules_stale_seconds: int = Field(default=90, ge=10, le=900)
+    modules_lease_seconds: int = Field(default=30, ge=5, le=120)
     oidc_algorithms: list[str] = ["RS256"]
     oidc_backchannel: str | None = None
     oidc_cache_seconds: int = Field(default=300, ge=10, le=3600)
@@ -58,6 +64,10 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def secure_configuration(self) -> "Settings":
         development = self.environment == "development"
+        if self.modules_audience == self.oidc_audience:
+            raise ValueError("Machine and human audiences must differ")
+        if self.modules_stale_seconds < self.modules_check_in_seconds * 2:
+            raise ValueError("Stale threshold must allow at least two check-ins")
         validate_url(self.public_url, development=development)
         validate_url(self.oidc_issuer, development=development)
         if not self.oidc_algorithms or not set(self.oidc_algorithms) <= {"RS256", "RS384", "RS512", "ES256"}:

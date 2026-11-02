@@ -1,5 +1,7 @@
 # Xarionix Core
 
+Sprint 4A: отдельные machine identities/capabilities/company scopes, исходящий REST check-in, PostgreSQL command leases/идемпотентный ACK, demo autonomous agent и disposable DB privilege rehearsal. [Архитектура/API](docs/module-communication.md), [регистрация и JWT](docs/service-authentication.md), [протокол и запуск агента](docs/module-control-channel.md), [threat model](docs/module-threat-model.md), [проверки и upgrade](docs/sprint-4a-validation.md).
+
 Sprint 3: tenant-scoped custom roles, несколько назначений, permission-based authorization, защищённые системные роли и владение, безопасное делегирование, fine-grained PostgreSQL locks и стабильные MFA fixtures. [RBAC/API](docs/rbac.md), [делегирование](docs/permission-delegation.md), [блокировки, benchmark и upgrade](docs/transaction-locking.md), [контракт модулей](docs/module-permission-contract.md), [проверки Sprint 3](docs/sprint-3-validation.md).
 
 Sprint 2: глобальные профили, явный human/service-допуск, компании и owner/admin/member memberships, заявки, сотрудники, одноразовые приглашения, Platform Admin, транзакционный аудит. [Модель и API](docs/users-and-companies.md), [администрирование и обязательная настройка MFA](docs/platform-administration.md), [изоляция](docs/tenant-isolation.md), [проверки](docs/sprint-2-validation.md).
@@ -71,6 +73,8 @@ python3 -m scripts.setup validate --env-file deployment.env --language ru
 | `/api/v1/companies/{id}/members`, `/employees`, `/invitations` | Активное company membership + действие | Company-scoped бизнес-операции |
 | `/api/v1/companies/{id}/roles`, `/members/{id}/roles`, `/me/permissions` | Текущие company permissions | Роли, назначения, effective permissions |
 | `/api/v1/platform/*` | Явный Platform Admin + настроенный свежий MFA context | Политики, заявки, admin grants, безопасные метаданные и аудит; не обход company access |
+| `/api/v1/platform/module-services`, `/module-instances` | Platform Admin + MFA | Явная регистрация, scopes, состояние и безопасные команды |
+| `/api/v1/module-agent/*` | Dedicated machine JWT + DB binding/capability | Исходящие heartbeat, свои команды/ACK, разрешённые metadata; без human JIT |
 | `GET /api/v1/system/info` | Bearer JWT | Только продукт и версии API/приложения |
 
 В production `/docs` и `/openapi.json` отключены по умолчанию. `XARIONIX_DOCS_ENABLED=true` осознанно делает их публичными. Health не раскрывает адреса инфраструктуры или причины ошибок. Readiness не подменяет authentication.
@@ -94,4 +98,4 @@ XARIONIX_RUN_DOCKER_TESTS=1 .venv/bin/pytest tests/integration -vv
 
 ## Следующие этапы
 
-Sprint 4: проверенный package/module lifecycle, `.xpkg`/SDK и отдельная machine authorization. Модули не получают прямой доступ к Core DB. Org hierarchy, payroll, SMTP и frontend отложены. До production upgrade прочтите [maintenance migration guide](docs/transaction-locking.md#upgrade-sprint-2--sprint-3); readiness требует `0004_rbac`. `make locking-benchmark` измеряет DB critical section на disposable 0002 → 0003, не обращаясь к рабочим volumes.
+Sprint 4B: `.xpkg` specification, manifest/trust policy, signatures и compatibility checks. Полноценные Module Manager, user delegation/token exchange, business gateway, Org hierarchy, payroll, SMTP и frontend отложены. Модули не получают Core DB credentials. Readiness требует `0005_module_control`; до production upgrade прочтите [maintenance guide](docs/sprint-4a-validation.md). `make locking-benchmark` сохраняет DB comparison 0002 → 0003; module HTTP measurement встроен в новые integration tests. Read-only privilege audit: `python -m scripts.db_privileges` внутри настроенного Core-контейнера; ownership/credentials он не меняет.

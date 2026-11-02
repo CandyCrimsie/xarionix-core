@@ -225,7 +225,7 @@ async def test_identity_jit_is_atomic_and_preserves_existing_ids(ctx):
         == ctx.identity.id
     )
     ctx.session.commit.assert_awaited_once()
-    ctx.session.scalar.side_effect = [None, None]
+    ctx.session.scalar.side_effect = [None, None, None]
     new = await identities.identity_in_transaction(ctx.session, "https://other.test/realm", "new-sub")
     assert new.principal_type == "unclassified"
     assert new.id != ctx.identity.id

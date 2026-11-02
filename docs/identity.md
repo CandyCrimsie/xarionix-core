@@ -1,5 +1,7 @@
 # Keycloak и идентичность
 
+Sprint 4A добавляет отдельный [machine authentication path](service-authentication.md): dedicated audience/purpose, точный registry binding issuer/sub/azp и capabilities без User/Membership/JIT. Описанный ниже профиль первого входа относится к legacy human-audience пути. Machine JWT/purpose запрещён на нём до JIT. Production service clients настраиваются оператором отдельно; существующий managed browser realm не меняется автоматически.
+
 ## Managed
 
 Keycloak 26.8.1 запускается в production server mode (`start --import-realm`), не `start-dev`. Установщик создаёт `deploy/generated/xarionix-realm.json` без секретов. При первой установке появляется realm `xarionix`:
@@ -42,7 +44,7 @@ External Compose не содержит Keycloak или его DB. Установ
 
 Получите **access token**, не ID token, через доверенный PKCE-клиент. Для ручной проверки используйте клиент, который умеет хранить секретные значения вне history/URL; не вставляйте JWT в shell-команду. Автоматические integration-тесты получают тестовый service-account token в отдельном disposable realm; production-клиенты такого grant не имеют.
 
-Нет Core login/password/refresh-token endpoint. Нет silent administrator provisioning. Realm roles не являются authorization моделью Core. Principal type хранится в DB и не выводится из недоказанных свойств `sub`, `azp`, имени, email или произвольного claim. Оператор сверяет Identity UUID с issuer/subject в IdP и явно допускает human; service/unclassified могут читать собственный `/me`, но не создавать компании/заявки или редактировать профиль. Машинный business API отложен. Один User в модели может иметь несколько Identity, но автоматического linking или публичного linking API нет.
+Нет Core login/password/refresh-token endpoint или silent administrator provisioning. Realm roles не являются permissions. Principal type legacy Identity хранится в DB, не выводится из недоказанных sub/azp/email/claim. Оператор сверяет Identity UUID с IdP и явно допускает human; старые service/unclassified Identity с human audience могут читать свой `/me`, но не выполнять human mutations. Новые machine identities используют отдельный registry и `/module-agent/*`, без обычного профиля. Machine business API отложен. Один User может иметь несколько Identity, но автоматического/public linking нет.
 
 Для допуска и bootstrap используйте [platform-administration.md](platform-administration.md). Platform HTTP administration дополнительно требует exact `acr` из конфигурационного allowlist и свежий `auth_time` в **проверенном access token**. Пустой allowlist по умолчанию запрещает административные HTTP-операции. Не подставляйте фиктивный `acr` mapper вместо реальной MFA: см. [Keycloak authentication flows](https://www.keycloak.org/docs/latest/server_admin/index.html#_authentication-flows) и [RFC 9470](https://www.rfc-editor.org/rfc/rfc9470.html). Production realm не изменяется автоматически ради MFA; повторный import существующего realm по-прежнему не применяется.
 

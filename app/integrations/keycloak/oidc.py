@@ -130,7 +130,7 @@ class OIDCVerifier:
         except ProviderUnavailable:
             return False
 
-    async def verify(self, token: str) -> dict[str, Any]:
+    async def verify(self, token: str, *, audience: str | None = None) -> dict[str, Any]:
         if not 1 <= len(token) <= 16384:
             raise InvalidToken()
         try:
@@ -153,7 +153,7 @@ class OIDCVerifier:
                 key=key.key,
                 algorithms=self.settings.oidc_algorithms,
                 issuer=self.settings.oidc_issuer,
-                audience=self.settings.oidc_audience,
+                audience=audience or self.settings.oidc_audience,
                 leeway=self.settings.oidc_leeway_seconds,
                 options={"require": ["exp", "iat", "iss", "aud", "sub"]},
             )

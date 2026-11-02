@@ -6,6 +6,12 @@ def load_models() -> None:
     from app.domains.identity.model import Identity  # noqa: F401
     from app.domains.invitations.model import Invitation  # noqa: F401
     from app.domains.memberships.model import Membership  # noqa: F401
+    from app.domains.modules.model import (  # noqa: F401
+        ModuleCommand,
+        ModuleCompanyScope,
+        ModuleInstance,
+        ModuleService,
+    )
     from app.domains.platform.model import PlatformAdmin, PlatformSettings  # noqa: F401
     from app.domains.rbac.model import (  # noqa: F401
         InvitationRole,

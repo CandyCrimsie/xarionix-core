@@ -1,10 +1,10 @@
-# Архитектура Core — Sprint 3
+# Архитектура Core — Sprint 4A
 
 ## Границы
 
 Модульный монолит. `app/api/v1` — строгие DTO, тонкие маршруты и transaction dependency; `app/domains` — identity, users, companies/requests, memberships, employees, invitations, platform и audit. `app/core/access.py` — централизованные проверки principal, MFA, company action и audit writer. `app/core` также содержит конфигурацию, DB и безопасное логирование; `app/integrations/keycloak` — единый OIDC/JWKS resource-server integration. `scripts/setup.py` — stdlib-only deployment tool; `scripts/platform_admin.py` — явные offline operator actions, не HTTP bootstrap.
 
-`app/domains/rbac` добавляет каталог, роли, authorization engine, grantability и доверенный namespace contract. `app/core/locking.py` разделяет блокировки ресурсов. Organizations hierarchy и module runtime отложены. ERP/Billing/Web не импортируются и не нужны для запуска.
+`app/domains/rbac` добавляет каталог, роли, authorization engine, grantability и доверенный namespace contract. `app/core/locking.py` разделяет блокировки ресурсов. `app/domains/modules` содержит отдельные service bindings, instance/scopes, machine authorization и короткий polling commands/ACK. Это control plane, не business gateway или package installer. Organizations hierarchy отложена. ERP/Billing/Web не импортируются и не нужны для запуска.
 
 ## Identity Provider и БД
 
@@ -22,7 +22,7 @@ JIT создаёт профиль **без полномочий**: principal_typ
 
 ## Миграции
 
-Alembic `0001_identity` и `0002_platform` сохранены. `0003_locking` заменяет глобальные triggers на targeted locks/guards; `0004_rbac` создаёт каталог, company roles, links, delegation, templates и backfill. Все прежние UUID и бизнес-записи сохраняются. `create_all()` не используется. Compose `migrate` выполняет `alembic upgrade head` до Core; deployment advisory lock сохранён. Readiness требует `0004_rbac`. Деструктивный downgrade запрещён: нужен reviewed maintenance backup/restore. [Порядок обновления](transaction-locking.md#upgrade-sprint-2--sprint-3).
+Старые Alembic revisions 0001–0004 сохранены. `0005_module_control` добавляет только machine control tables/guards, не меняет ownership/RBAC semantics прежних данных. `create_all()` не используется. Compose `migrate` выполняет upgrade head до Core; deployment lock сохранён. Readiness требует `0005_module_control`. Destructive downgrade запрещён: нужен maintenance backup/restore. [Обновление и privilege rehearsal](sprint-4a-validation.md).
 
 ## Транзакции и авторизация
 
@@ -44,4 +44,6 @@ Production: только Nginx публикует 80/443. Core:8000, PostgreSQL:
 
 ## Ограничения
 
-Нет высокодоступного deployment, Redis, distributed JWKS cache, общего SDK, UI и service-to-service business permissions. Company RBAC использует PostgreSQL без внешнего authorization cache. Нет role inheritance, wildcard или generic policy языка. Namespace foundation не является module installer. Кэш OIDC-ключей локален процессу; смена доверенного issuer требует проверенной конфигурации. Рабочая схема рассчитана на один явно настроенный issuer, а не на произвольные IdP компаний.
+Нет высокодоступного deployment, Redis, distributed JWKS cache, общего SDK, UI и service-to-service business permissions. Company RBAC использует PostgreSQL без внешнего authorization cache. Нет role inheritance, wildcard или generic policy языка. Namespace foundation не является module installer. Кэш OIDC-ключей локален процессу; смена trusted issuer требует проверенной конфигурации. Поддерживается один issuer, не произвольные IdP компаний.
+
+Новая [module communication architecture](module-communication.md) отделяет control от будущего business plane. Machine requests не открывают human transaction/JIT, не получают Membership и не используют human permission catalog. Core принимает только исходящие check-in/ACK, не подключается к module URL. Locks: service SHARE → instance UPDATE → command; глобального singleton gate на heartbeat нет.
