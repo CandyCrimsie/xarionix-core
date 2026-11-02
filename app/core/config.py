@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -45,6 +46,17 @@ class Settings(BaseSettings):
     modules_check_in_seconds: int = Field(default=15, ge=1, le=120)
     modules_stale_seconds: int = Field(default=90, ge=10, le=900)
     modules_lease_seconds: int = Field(default=30, ge=5, le=120)
+    packages_storage_root: Path = Path("/var/lib/xarionix/packages")
+    packages_max_bytes: int = Field(default=128 * 1024 * 1024, ge=1024, le=128 * 1024 * 1024)
+    packages_max_files: int = Field(default=1024, ge=3, le=1024)
+    packages_max_file_bytes: int = Field(default=32 * 1024 * 1024, ge=1, le=32 * 1024 * 1024)
+    packages_max_total_bytes: int = Field(default=256 * 1024 * 1024, ge=1, le=256 * 1024 * 1024)
+    packages_max_path_depth: int = Field(default=12, ge=1, le=12)
+    packages_max_path_bytes: int = Field(default=240, ge=1, le=240)
+    packages_max_ratio: int = Field(default=100, ge=1, le=100)
+    packages_max_manifest_bytes: int = Field(default=256 * 1024, ge=1, le=256 * 1024)
+    packages_max_signature_bytes: int = Field(default=4096, ge=1, le=4096)
+    packages_upload_seconds: int = Field(default=120, ge=5, le=300)
     oidc_algorithms: list[str] = ["RS256"]
     oidc_backchannel: str | None = None
     oidc_cache_seconds: int = Field(default=300, ge=10, le=3600)
@@ -64,6 +76,8 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def secure_configuration(self) -> "Settings":
         development = self.environment == "development"
+        if not self.packages_storage_root.is_absolute() or ".." in self.packages_storage_root.parts:
+            raise ValueError("Package storage must be an absolute operator-configured path")
         if self.modules_audience == self.oidc_audience:
             raise ValueError("Machine and human audiences must differ")
         if self.modules_stale_seconds < self.modules_check_in_seconds * 2:

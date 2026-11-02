@@ -10,7 +10,12 @@ class ModuleBodyLimit:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or not scope["path"].startswith(
-            ("/api/v1/module-agent", "/api/v1/platform/module-")
+            (
+                "/api/v1/module-agent",
+                "/api/v1/platform/module-",
+                "/api/v1/platform/package-publishers",
+                "/api/v1/platform/packages/",
+            )
         ):
             await self.app(scope, receive, send)
             return

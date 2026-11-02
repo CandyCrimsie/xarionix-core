@@ -1,4 +1,4 @@
-# Архитектура Core — Sprint 4A
+# Архитектура Core — Sprint 4B
 
 ## Границы
 
@@ -22,7 +22,7 @@ JIT создаёт профиль **без полномочий**: principal_typ
 
 ## Миграции
 
-Старые Alembic revisions 0001–0004 сохранены. `0005_module_control` добавляет только machine control tables/guards, не меняет ownership/RBAC semantics прежних данных. `create_all()` не используется. Compose `migrate` выполняет upgrade head до Core; deployment lock сохранён. Readiness требует `0005_module_control`. Destructive downgrade запрещён: нужен maintenance backup/restore. [Обновление и privilege rehearsal](sprint-4a-validation.md).
+Старые Alembic revisions 0001–0005 сохранены. Новая `0006_package_registry` добавляет inert package/trust tables и terminal ModuleInstance revoke guard, не меняя company RBAC. `0007_instance_history` закрывает DML delete/reinsert и TRUNCATE bypass для instance history. `create_all()` не используется. Compose migrate выполняет upgrade head до Core; readiness требует `0007_instance_history`. Destructive downgrade запрещён: нужен maintenance backup/restore. [Upgrade/storage](package-registry.md), [отдельные DB credentials и maintenance](runtime-database-roles.md).
 
 ## Транзакции и авторизация
 
@@ -30,7 +30,9 @@ Request context открывает AsyncSession transaction. `Depends(..., scope
 
 Owner guard проверяет только затронутые компании; Platform Admin имеет независимый global guard. DB critical-section benchmark и реальные concurrency tests проверяют отсутствие singleton-сериализации независимых company writes. Tenant isolation не заменяется глобальной административной ролью. Custom roles и конечные grant policies — [rbac.md](rbac.md), [permission-delegation.md](permission-delegation.md).
 
-Приложение и миграции используют `core_app` (не superuser). Отдельный bootstrap superuser нужен только entrypoint PostgreSQL и обслуживанию DB. Keycloak имеет собственные DB, volume и роли; credentials не передаются Core.
+По совместимости defaults приложения/миграций используют `core_app` (не superuser, но владелец schema). Отдельные runtime/migration credentials поддержаны явно; ownership transfer не выполняется автоматически. Отдельный bootstrap superuser нужен только entrypoint PostgreSQL и обслуживанию DB. Keycloak имеет собственные DB, volume и роли; credentials не передаются Core.
+
+`app/domains/packages` отделён от ModuleService/Instance: подписанная дистрибуция, issuer trust и будущая installation — разные сущности. Upload освобождает начальную admin transaction до streaming/hash, затем повторяет live authorization/trust перед metadata+audit commit. Private content-addressed volume хранит инертные blobs без overwrite; explicit reconcile закрывает orphan gap между FS и PostgreSQL. [Детали](package-registry.md).
 
 PostgreSQL healthcheck проверяет TCP loopback, не Unix socket: временный init server официального образа не должен преждевременно разрешать запуск миграций до завершения role provisioning. Это согласовано с [entrypoint Docker PostgreSQL](https://github.com/docker-library/postgres/blob/master/docker-entrypoint.sh).
 

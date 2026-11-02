@@ -461,7 +461,7 @@ def test_real_managed_keycloak_token_me_and_postgres_identity(stack):
         ).fetchone()
         assert row is not None and row[1] == stack["issuer"]
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0005_module_control",
+            "0007_instance_history",
         )
         assert connection.execute(
             "SELECT rolsuper FROM pg_roles WHERE rolname = current_user"
@@ -631,11 +631,14 @@ def actors(stack):
     stack["execute"](bootstrap)  # explicit, idempotent, not first-JWT bootstrap
 
     def request(label, method, path, **kwargs):
+        headers = kwargs.pop("headers", {}) | {
+            "Authorization": "Bearer " + token(stack, "integration-" + label)
+        }
         with httpx.Client(base_url=stack["config"]["PUBLIC_URL"], timeout=30, trust_env=False) as client:
             return client.request(
                 method,
                 "/api/v1" + path,
-                headers={"Authorization": "Bearer " + token(stack, "integration-" + label)},
+                headers=headers,
                 **kwargs,
             )
 

@@ -6,6 +6,10 @@
 *.p12
 *.pfx
 *.dump
+*.xpkg
+*.private
+**/*.xpkg
+**/*.private
 *.log
 .install.lock
 .venv

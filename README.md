@@ -1,5 +1,13 @@
 # Xarionix Core
 
+Sprint 4B: строгий `.xpkg` V1, offline Ed25519 keygen/pack/sign/verify, publisher/key/namespace trust,
+потоковый admin/MFA upload, PostgreSQL verified registry и private CAS с reverify/recovery.
+Это **не installer**, не runtime loader и не лицензирование. [Спецификация](docs/xpkg-specification.md),
+[подписи](docs/xpkg-signatures.md), [trust](docs/publisher-trust.md), [API/storage](docs/package-registry.md),
+[путь разработчика](docs/module-development-guide.md), [threat model](docs/xpkg-security.md),
+[frontend boundary](docs/frontend-module-trust.md), [DB roles](docs/runtime-database-roles.md),
+[проверки Sprint 4B](docs/sprint-4b-validation.md).
+
 Sprint 4A: отдельные machine identities/capabilities/company scopes, исходящий REST check-in, PostgreSQL command leases/идемпотентный ACK, demo autonomous agent и disposable DB privilege rehearsal. [Архитектура/API](docs/module-communication.md), [регистрация и JWT](docs/service-authentication.md), [протокол и запуск агента](docs/module-control-channel.md), [threat model](docs/module-threat-model.md), [проверки и upgrade](docs/sprint-4a-validation.md).
 
 Sprint 3: tenant-scoped custom roles, несколько назначений, permission-based authorization, защищённые системные роли и владение, безопасное делегирование, fine-grained PostgreSQL locks и стабильные MFA fixtures. [RBAC/API](docs/rbac.md), [делегирование](docs/permission-delegation.md), [блокировки, benchmark и upgrade](docs/transaction-locking.md), [контракт модулей](docs/module-permission-contract.md), [проверки Sprint 3](docs/sprint-3-validation.md).

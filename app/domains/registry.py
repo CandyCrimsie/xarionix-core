@@ -12,6 +12,12 @@ def load_models() -> None:
         ModuleInstance,
         ModuleService,
     )
+    from app.domains.packages.model import (  # noqa: F401
+        ModulePackage,
+        PackagePublisher,
+        PublisherNamespaceGrant,
+        PublisherSigningKey,
+    )
     from app.domains.platform.model import PlatformAdmin, PlatformSettings  # noqa: F401
     from app.domains.rbac.model import (  # noqa: F401
         InvitationRole,

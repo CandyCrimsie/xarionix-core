@@ -145,7 +145,7 @@ def archive_source(destination: BinaryIO, *, publish: bool = False) -> None:
             if leaf != ".env.example" and (
                 leaf == ".env"
                 or leaf.startswith(".env.")
-                or leaf.endswith((".env", ".pem", ".key", ".p12", ".pfx", ".dump"))
+                or leaf.endswith((".env", ".pem", ".key", ".p12", ".pfx", ".dump", ".private", ".xpkg"))
             ):
                 raise ValueError("Refusing a secret/config data file in the source archive")
             info = archive.gettarinfo(str(source), arcname=name)

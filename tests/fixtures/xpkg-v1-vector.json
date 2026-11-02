@@ -1,0 +1,50 @@
+{
+  "warning": "PUBLIC RFC8032 TEST SEED, NEVER A TRUST ANCHOR OR PRODUCTION KEY",
+  "test_only_seed_rfc8032": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+  "manifest": {
+    "schema_version": 1,
+    "module": {
+      "id": "test-module",
+      "name": "\u0422\u0435\u0441\u0442\u043e\u0432\u044b\u0439 \u043c\u043e\u0434\u0443\u043b\u044c",
+      "version": "1.0.0",
+      "type": "standard"
+    },
+    "publisher": {
+      "id": "test-publisher"
+    },
+    "compatibility": {
+      "core": ">=0.1.0 <0.2.0",
+      "module_protocol": 1
+    },
+    "permissions": {
+      "namespace": "testnet",
+      "definitions": [
+        {
+          "key": "testnet.objects.read",
+          "description": "\u0427\u0442\u0435\u043d\u0438\u0435 \u043e\u0431\u044a\u0435\u043a\u0442\u043e\u0432",
+          "scope": "company"
+        }
+      ]
+    },
+    "dependencies": [],
+    "artifacts": [
+      {
+        "path": "payload/resources/example.txt",
+        "size": 5,
+        "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+      }
+    ]
+  },
+  "canonical_utf8_hex": "7b22617274696661637473223a5b7b2270617468223a227061796c6f61642f7265736f75726365732f6578616d706c652e747874222c22736861323536223a2232636632346462613566623061333065323665383362326163356239653239653162313631653563316661373432356537333034333336323933386239383234222c2273697a65223a357d5d2c22636f6d7061746962696c697479223a7b22636f7265223a223e3d302e312e30203c302e322e30222c226d6f64756c655f70726f746f636f6c223a317d2c22646570656e64656e63696573223a5b5d2c226d6f64756c65223a7b226964223a22746573742d6d6f64756c65222c226e616d65223a22d0a2d0b5d181d182d0bed0b2d18bd0b920d0bcd0bed0b4d183d0bbd18c222c2274797065223a227374616e64617264222c2276657273696f6e223a22312e302e30227d2c227065726d697373696f6e73223a7b22646566696e6974696f6e73223a5b7b226465736372697074696f6e223a22d0a7d182d0b5d0bdd0b8d0b520d0bed0b1d18ad0b5d0bad182d0bed0b2222c226b6579223a22746573746e65742e6f626a656374732e72656164222c2273636f7065223a22636f6d70616e79227d5d2c226e616d657370616365223a22746573746e6574227d2c227075626c6973686572223a7b226964223a22746573742d7075626c6973686572227d2c22736368656d615f76657273696f6e223a317d",
+  "manifest_sha256": "8a29b0a12e5c91d60c40371eeecd84c21e266171359658f38dc8461470a71872",
+  "signed_bytes_sha256": "243b6ac4f0aebf8549bfa0d61123bcc38c003fe59b6c9f4525602a9b41fd8b7a",
+  "public_key": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+  "envelope": {
+    "schema_version": 1,
+    "algorithm": "Ed25519",
+    "publisher_id": "test-publisher",
+    "key_id": "test-key",
+    "signature": "mrz9u6iC9cQLrB81tIFZA0ZMIVC7M78oRyNdZjpxijJUbCGpHl6/sXh+9lijoUqihuH38ZlM6EvSrPUZgsQZDg=="
+  },
+  "expected": "valid"
+}

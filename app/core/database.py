@@ -37,6 +37,6 @@ async def database_ready(engine: AsyncEngine) -> bool:
     try:
         async with asyncio.timeout(6), engine.connect() as connection:
             revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            return bool(revision == "0005_module_control")
+            return bool(revision == "0007_instance_history")
     except Exception:
         return False

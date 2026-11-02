@@ -77,6 +77,7 @@ lint:python-shell:
     - sh -n deploy/postgres/10-app-user.sh
 
 test:unit:
+  # Includes offline XPKG signature vectors, malicious archives and CLI regressions.
   extends: .python
   stage: test
   script:

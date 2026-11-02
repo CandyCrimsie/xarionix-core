@@ -1,4 +1,5 @@
 .PHONY: install-dev validate lint typecheck test security check compose-check dev-config dev-up dev-down dev-status dev-logs dev-test integration-test locking-benchmark docker-build docker-scan
+.PHONY: package-benchmark
 PYTHON ?= python3
 IMAGE ?= xarionix-core:local
 DEV_COMPOSE = docker compose --env-file .env.dev -f compose.dev.yaml
@@ -48,3 +49,5 @@ docker-build:
 	.venv/bin/python -m scripts.ci image-check --image $(IMAGE)
 docker-scan:
 	.venv/bin/python -m scripts.ci trivy --image $(IMAGE)
+package-benchmark:
+	.venv/bin/python -m scripts.xpkg_benchmark

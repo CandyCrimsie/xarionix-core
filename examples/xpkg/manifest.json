@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "module": {"id": "example-module", "name": "Пример модуля Xarionix", "version": "1.0.0", "description": "Инертный пример пакета без runtime", "type": "standard"},
+  "publisher": {"id": "example-publisher"},
+  "compatibility": {"core": ">=0.1.0 <0.2.0", "module_protocol": 1},
+  "permissions": {"namespace": "example", "definitions": [{"key": "example.objects.read", "description": "Чтение объектов примера", "scope": "company"}]},
+  "dependencies": [],
+  "artifacts": []
+}

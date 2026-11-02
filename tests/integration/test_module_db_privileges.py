@@ -9,6 +9,7 @@ import jwt
 import psycopg
 import pytest
 import test_managed_stack as managed
+from package_helpers import package
 from psycopg import sql
 
 from app.core.config import Settings
@@ -21,7 +22,7 @@ stack = managed.stack
 pytestmark = pytest.mark.integration
 
 
-async def test_split_owner_migrator_runtime_real_upgrade_and_api_mutations(stack):
+async def test_split_owner_migrator_runtime_real_upgrade_and_api_mutations(stack, tmp_path):
     suffix = uuid.uuid4().hex[:12]
     database, owner, migrator, runtime = (
         name + suffix for name in ("xarionix_privilege_", "owner_", "migrator_", "runtime_")
@@ -156,7 +157,7 @@ async def test_split_owner_migrator_runtime_real_upgrade_and_api_mutations(stack
             sql.SQL("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO {}").format(sql.Identifier(runtime))
         )
         assert operator.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0005_module_control",
+            "0007_instance_history",
         )
         assert operator.execute("SELECT id FROM memberships WHERE company_id=%s", (cid,)).fetchone() == (
             membership,
@@ -187,6 +188,8 @@ async def test_split_owner_migrator_runtime_real_upgrade_and_api_mutations(stack
         db_name=database,
         db_user=runtime,
         db_password=runtime_secret,
+        admin_acr_values=["test-step-up"],
+        packages_storage_root=tmp_path / "registry",
     )
     engine, _ = create_database(config)
     try:
@@ -203,7 +206,7 @@ async def test_split_owner_migrator_runtime_real_upgrade_and_api_mutations(stack
     finally:
         await engine.dispose()
     app = create_app(config)
-    token = managed.token(stack, "integration-only")
+    token = managed.token(stack, "integration-admin")
     async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
         response = await client.post(
             stack["issuer"] + "/protocol/openid-connect/token",
@@ -239,6 +242,9 @@ async def test_split_owner_migrator_runtime_real_upgrade_and_api_mutations(stack
             operator.execute(
                 "UPDATE identities SET principal_type='human' WHERE id=%s", (response.json()["id"],)
             )
+            operator.execute(
+                "INSERT INTO platform_admins(user_id,active) VALUES (%s,true)", (response.json()["user_id"],)
+            )
         response = await client.post(
             "/api/v1/companies", json={"name": "Runtime company", "slug": "runtime-company"}
         )
@@ -266,4 +272,31 @@ async def test_split_owner_migrator_runtime_real_upgrade_and_api_mutations(stack
             },
         )
         assert response.status_code == 200, response.json().get("detail")
+        archive, trust, _ = package(tmp_path / "package")
+        response = await client.post(
+            "/api/v1/platform/package-publishers",
+            json={"publisher_id": "test-publisher", "display_name": "Restricted runtime publisher"},
+        )
+        assert response.status_code == 201, response.text
+        publisher = response.json()["id"]
+        response = await client.post(
+            f"/api/v1/platform/package-publishers/{publisher}/keys",
+            json={"key_id": "test-key", "public_key": trust.keys[0].public_key},
+        )
+        assert response.status_code == 201, response.text
+        assert (
+            await client.put(
+                f"/api/v1/platform/package-publishers/{publisher}/namespaces",
+                json={"namespaces": ["testnet"]},
+            )
+        ).status_code == 200
+        response = await client.post(
+            "/api/v1/platform/packages",
+            content=archive.read_bytes(),
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        assert response.status_code == 201, response.text
+        assert (
+            await client.post("/api/v1/platform/packages/" + response.json()["id"] + "/verify")
+        ).status_code == 200
     # Cleanup belongs to the enclosing disposable Compose project. No installed DB/role is touched.

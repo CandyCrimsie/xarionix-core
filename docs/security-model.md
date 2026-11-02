@@ -68,3 +68,11 @@ Bootstrap Keycloak master admin — временный администрати�
 6. Rollback: остановить writes, восстановить проверенные ownership/grants/secrets либо backup; не удалять volumes и не менять рабочие passwords автоматически.
 
 Это документированный следующий hardening, не заявленная гарантия Sprint 3. До rollout сервер/DB operator и текущие owner credentials остаются доверенными. Company admin/будущий модуль этих credentials не получает.
+
+## Подписанные пакеты — Sprint 4B
+
+Пакет не получает human/machine полномочий. Trust operations доступны только Platform Admin + recent MFA;
+подпись Ed25519 проверяет origin/inventory, не безопасность исполнения. Verifier не распаковывает/исполняет код,
+Core не публикует frontend bundle и не активирует namespaces. Current trust проверяется отдельно от истории import.
+Private CAS/streaming/recovery, 35 угроз и ограничения описаны в [xpkg-security.md](xpkg-security.md).
+Отдельные DB credentials и явный maintenance ownership transfer — [runtime-database-roles.md](runtime-database-roles.md).

@@ -66,6 +66,9 @@ def check() -> None:
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     if metadata["name"] != "xarionix-core" or not re.fullmatch(r"\d+\.\d+\.\d+", metadata["version"]):
         raise ValueError("Invalid Python project metadata")
+    # Deployment fallback must not silently drift from the authoritative project version.
+    if f"ARG VERSION={metadata['version']}\n" not in (ROOT / "Dockerfile").read_text():
+        raise ValueError("Docker fallback version differs from pyproject.toml")
     for filename in ("compose.yaml", "compose.keycloak.yaml", "compose.dev.yaml", ".gitlab-ci.yml"):
         if not isinstance(load_yaml(ROOT / filename), dict):
             raise ValueError(f"Invalid YAML document: {filename}")
@@ -88,7 +91,7 @@ def check() -> None:
         if name != ".env.example" and (
             name == ".env"
             or name.startswith(".env.")
-            or name.endswith((".env", ".key", ".pem", ".p12", ".pfx", ".dump"))
+            or name.endswith((".env", ".key", ".pem", ".p12", ".pfx", ".dump", ".private", ".xpkg"))
         ):
             raise ValueError(f"Secret/config data file tracked in Git: {filename}")
         if filename.startswith(("app/", "scripts/")):

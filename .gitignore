@@ -5,6 +5,8 @@
 *.p12
 *.pfx
 *.dump
+*.xpkg
+*.private
 .env.*
 !.env.example
 .venv

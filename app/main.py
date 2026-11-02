@@ -17,6 +17,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
 from app.api.v1.modules import router as modules_router
+from app.api.v1.packages import router as packages_router
 from app.api.v1.rbac import router as rbac_router
 from app.api.v1.routes import router
 from app.api.v1.tenants import router as tenants_router
@@ -24,7 +25,9 @@ from app.core.config import Settings
 from app.core.database import create_database, database_ready
 from app.core.logging import configure_logging
 from app.core.module_body_limit import ModuleBodyLimit
+from app.domains.packages.codec import PackageError
 from app.integrations.keycloak.oidc import OIDCVerifier
+from app.version import VERSION
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -57,7 +60,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Xarionix Core",
-        version="0.1.0",
+        version=VERSION,
         lifespan=lifespan,
         docs_url="/docs" if config.docs_enabled else None,
         redoc_url=None,
@@ -65,6 +68,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = config
     app.add_middleware(ModuleBodyLimit)
+
+    @app.exception_handler(PackageError)
+    async def invalid_package(request: Request, error: PackageError) -> JSONResponse:
+        code = str(error)
+        return JSONResponse(
+            {"detail": {"code": code}},
+            status_code=503
+            if code
+            in {
+                "package_capacity_busy",
+                "storage_configuration_invalid",
+                "storage_permissions_invalid",
+                "storage_directory_invalid",
+                "storage_capacity_low",
+            }
+            else 422,
+        )
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request: Request, error: RequestValidationError) -> JSONResponse:
@@ -131,4 +151,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(tenants_router)
     app.include_router(rbac_router)
     app.include_router(modules_router)
+    app.include_router(packages_router)
     return app

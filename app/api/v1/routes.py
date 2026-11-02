@@ -6,6 +6,7 @@ from app.api.v1.dependencies import Ctx
 from app.api.v1.schemas import Profile, ProfilePatch
 from app.core.access import audit, require_human
 from app.core.authentication import verified_claims
+from app.version import VERSION
 
 router = APIRouter(prefix="/api/v1")
 
@@ -41,4 +42,4 @@ async def update_me(payload: ProfilePatch, ctx: Ctx) -> Profile:
 
 @router.get("/system/info")
 async def system_info(claims: Annotated[dict[str, Any], Depends(verified_claims)]) -> dict[str, str]:
-    return {"product": "Xarionix Core", "version": "0.1.0", "api_version": "v1"}
+    return {"product": "Xarionix Core", "version": VERSION, "api_version": "v1"}

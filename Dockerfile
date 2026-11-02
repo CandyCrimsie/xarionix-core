@@ -22,7 +22,9 @@ ENV PATH=/opt/venv/bin:$PATH PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 # Runtime does not need package installers or their vendored dependency trees.
 # This explicit image-only directory is CPython's bundled pip bootstrap, not user data.
 RUN python -m pip uninstall --yes pip && rm -rf /usr/local/lib/python3.13/ensurepip \
-    && addgroup -S -g 10001 xarionix && adduser -S -D -H -u 10001 -G xarionix xarionix
+    && addgroup -S -g 10001 xarionix && adduser -S -D -H -u 10001 -G xarionix xarionix \
+    && mkdir -p /var/lib/xarionix/packages \
+    && chown 10001:10001 /var/lib/xarionix/packages && chmod 700 /var/lib/xarionix/packages
 WORKDIR /srv/core
 COPY --from=builder /opt/venv /opt/venv
 COPY --chown=10001:10001 app ./app

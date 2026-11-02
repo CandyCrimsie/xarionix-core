@@ -252,6 +252,34 @@ def url(value: str, field: str, *, root: bool = False, development: bool = False
 
 def validate(config: dict[str, str], *, development: bool = False) -> None:
     env_text(config)
+    for key in ("DB_USER", "MIGRATION_DB_USER"):
+        if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", config.get(key, "core_app")):
+            raise SetupError("invalid", "XARIONIX_" + key)
+    if (
+        config.get("MIGRATION_DB_USER", "core_app") != "core_app"
+        and len(config.get("MIGRATION_DB_PASSWORD", "")) < 24
+    ):
+        raise SetupError("invalid", "XARIONIX_MIGRATION_DB_PASSWORD")
+    try:
+        if not 1024 <= int(config.get("PACKAGES_MAX_BYTES", "134217728")) <= 134217728:
+            raise ValueError()
+        if not 5 <= int(config.get("PACKAGES_UPLOAD_SECONDS", "120")) <= 300:
+            raise ValueError()
+        for field, cap in {
+            "FILES": 1024,
+            "FILE_BYTES": 33554432,
+            "TOTAL_BYTES": 268435456,
+            "PATH_DEPTH": 12,
+            "PATH_BYTES": 240,
+            "RATIO": 100,
+            "MANIFEST_BYTES": 262144,
+            "SIGNATURE_BYTES": 4096,
+        }.items():
+            value = int(config.get("PACKAGES_MAX_" + field, str(cap)))
+            if not (3 if field == "FILES" else 1) <= value <= cap:
+                raise ValueError()
+    except ValueError:
+        raise SetupError("invalid", "XARIONIX_PACKAGES_MAX_BYTES/PACKAGES_UPLOAD_SECONDS") from None
     expected = "development" if development else "production"
     if config.get("ENVIRONMENT") != expected:
         raise SetupError("invalid", "XARIONIX_ENVIRONMENT")
@@ -418,6 +446,27 @@ def nginx(config: dict[str, str]) -> str:
         hosts.append((urlsplit(config["KEYCLOAK_PUBLIC_URL"]).hostname, "keycloak", "keycloak:8080"))
     servers = []
     for host, name, upstream in hosts:
+        # Only the Core vhost accepts large streamed archives. Keycloak retains the 2 MiB default.
+        package_location = (
+            ""
+            if name != "core"
+            else f"""
+        location = /api/v1/platform/packages {{
+            client_max_body_size 128m;
+            client_body_timeout 120s;
+            set $upstream http://{upstream};
+            proxy_pass $upstream;
+            proxy_http_version 1.1;
+            proxy_request_buffering off;
+            proxy_set_header Host {host};
+            proxy_set_header X-Forwarded-Proto https;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_set_header Connection "";
+            proxy_connect_timeout 5s;
+            proxy_read_timeout 180s;
+            proxy_send_timeout 120s;
+        }}"""
+        )
         servers.append(f"""
     server {{
         listen 8080;
@@ -432,6 +481,7 @@ def nginx(config: dict[str, str]) -> str:
         add_header Strict-Transport-Security "max-age=31536000" always;
         add_header X-Content-Type-Options nosniff always;
         add_header Referrer-Policy no-referrer always;
+        {package_location}
         location / {{
             set $upstream http://{upstream};
             proxy_pass $upstream;
