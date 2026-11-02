@@ -29,7 +29,7 @@ from app.domains.identity.service import resolve_identity
 from app.integrations.keycloak.oidc import OIDCVerifier
 from app.main import create_app
 from scripts import setup
-from scripts.ci import preflight
+from scripts.ci import compose_failure_kind, preflight, retry_compose_build
 
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[2]
@@ -231,6 +231,58 @@ def stack(tmp_path_factory):
         key: value for key, value in os.environ.items() if not key.startswith(("XARIONIX_", "COMPOSE_"))
     }
 
+    def record_failure(arguments, kind, returncode, attempt, retry):
+        # Static categories and Docker status fields only. Never persist raw stderr,
+        # expanded Compose config, argv values, tokens or disposable credentials.
+        phase = (
+            arguments[0]
+            if arguments and arguments[0] in {"config", "build", "up", "run", "exec", "restart", "ps"}
+            else "other"
+        )
+        safe = []
+        try:
+            status = subprocess.run(
+                command + ["ps", "--all", "--format", "json"],
+                env=environment,
+                capture_output=True,
+                timeout=20,
+            )
+            value = status.stdout.decode()
+            items = (
+                json.loads(value)
+                if value.startswith("[")
+                else [json.loads(line) for line in value.splitlines()]
+            )
+            safe = [
+                {key: item.get(key) for key in ("Service", "State", "Health", "ExitCode")} for item in items
+            ]
+        except (OSError, subprocess.TimeoutExpired, ValueError, TypeError, AttributeError):
+            pass
+        reports = ROOT / "reports"
+        reports.mkdir(exist_ok=True)
+        path = reports / "integration-diagnostics.json"
+        try:
+            history = json.loads(path.read_text()) if path.exists() else []
+            history = [item for item in history if isinstance(item, dict) and "phase" in item]
+        except (ValueError, TypeError):
+            history = []
+        history.append(
+            {
+                "project": project,
+                "phase": phase,
+                "kind": kind,
+                "returncode": returncode,
+                "attempt": attempt,
+                "retry_planned": retry,
+                "services": safe,
+            }
+        )
+        path.write_text(json.dumps(history[-20:]))
+        print(
+            f"Isolated stack phase={phase} kind={kind} exit={returncode} attempt={attempt} retry={retry}",
+            flush=True,
+        )
+
     def execute(arguments, timeout=600, extra_environment=None):
         if extra_environment and set(extra_environment) - {
             "XARIONIX_DB_USER",
@@ -238,41 +290,34 @@ def stack(tmp_path_factory):
             "XARIONIX_DB_PASSWORD",
         }:
             pytest.fail("Only disposable database override variables are allowed")
-        try:
-            result = subprocess.run(
-                command + arguments,
-                env=environment | (extra_environment or {}),
-                capture_output=True,
-                timeout=timeout,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            pytest.fail(
-                "Docker/Compose unavailable or timed out: integration requires the dedicated Docker runner"
-            )
-        if result.returncode:
-            reports = ROOT / "reports"
-            reports.mkdir(exist_ok=True)
-            status = subprocess.run(
-                command + ["ps", "--all", "--format", "json"], env=environment, capture_output=True
-            )
+        for attempt in (1, 2):
             try:
-                value = status.stdout.decode()
-                items = (
-                    json.loads(value)
-                    if value.startswith("[")
-                    else [json.loads(line) for line in value.splitlines()]
+                result = subprocess.run(
+                    command + arguments,
+                    env=environment | (extra_environment or {}),
+                    capture_output=True,
+                    timeout=timeout,
                 )
-                safe = [
-                    {key: item.get(key) for key in ("Service", "State", "Health", "ExitCode")}
-                    for item in items
-                ]
-                (reports / "integration-diagnostics.json").write_text(json.dumps(safe))
-            except (ValueError, TypeError):
-                pass
-            pytest.fail(
-                "Isolated stack command failed. See reports/integration-diagnostics.json; raw credentials/config are not logged"
-            )
-        return result.stdout
+            except (OSError, subprocess.TimeoutExpired) as error:
+                kind = (
+                    "command_timeout"
+                    if isinstance(error, subprocess.TimeoutExpired)
+                    else "docker_unavailable"
+                )
+                record_failure(arguments, kind, None, attempt, False)
+                pytest.fail(
+                    f"Isolated stack command failed ({kind}); see reports/integration-diagnostics.json"
+                )
+            if result.returncode == 0:
+                return result.stdout
+            kind = compose_failure_kind(result.stdout + result.stderr)
+            retry = retry_compose_build(arguments, kind, attempt)
+            record_failure(arguments, kind, result.returncode, attempt, retry)
+            if not retry:
+                pytest.fail(
+                    f"Isolated stack {arguments[0]} failed ({kind}, exit {result.returncode}); see reports/integration-diagnostics.json"
+                )
+            time.sleep(2)
 
     try:
         execute(["config", "-q"])

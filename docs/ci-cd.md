@@ -142,7 +142,43 @@ Compose project `xarionix-test-<pipeline>-<job>-<random>` имеет собст�
 
 Fixture cleanup удаляет **только свой случайный project**. В `finally` controller дополнительно проверяет job label и prefix test project перед удалением оставшихся test containers/networks/volumes; без числового `CI_JOB_ID` этот cleanup отказывается работать. При жёстком прерывании Runner удаляет одноразовый DinD service целиком. Cleanup не обращается к `xarionix-core`/`xarionix-core-dev` и не выполняет глобальные prune.
 
-`reports/integration-diagnostics.json` при ошибке содержит только Service/State/Health/ExitCode. Raw `.env`, JWT, passwords, Docker Env и realm secrets не сохраняются как artifacts. Для расширенной локальной диагностики используйте собственную изолированную среду и не публикуйте секреты.
+`reports/integration-diagnostics.json` содержит до 20 записей об ошибках: случайный test project,
+фазу команды, статическую категорию, exit code, номер попытки/решение о retry и
+Service/State/Health/ExitCode контейнеров. Даже если build упал до их создания, фаза и причина
+не теряются в пустом `[]`. Не публикуются raw stdout/stderr, argv, `.env`, JWT, passwords,
+Docker Env и realm secrets. Категория `unclassified` означает, что точную причину необходимо
+воспроизвести в собственной изолированной среде; это не доказательство сетевого сбоя.
+
+### Ошибка сборки до запуска стека (job 171)
+
+JUnit pipeline показал **70 passed / 17 setup errors**: один `docker compose build core`
+завершился с ненулевым exit code, поэтому все 17 тестов, использующих эту module fixture,
+получили одну и ту же ошибку. Следующие четыре disposable stacks, включая package registry,
+успешно отработали. Ошибки установки project metadata и запуска Keycloak здесь не подтверждаются.
+Старый код полностью отбрасывал output build, поэтому низкоуровневая причина этого конкретного
+падения не восстановима из сохранённого JUnit/trace. Нельзя объявлять её ни PyPI timeout,
+ни OOM без новых данных.
+
+Теперь зафиксированные сообщения о network timeout, временном DNS/reset или HTTP 429/502/503
+дают **ровно один повтор только `build core`**, с двухсекундной паузой и сохранённой записью
+о первой попытке. Миграции, команды API/БД, `up`, тесты и ошибки TLS/зависимостей/диска/памяти
+не получают такого retry. Повторная или неклассифицированная ошибка остаётся hard failure;
+общего GitLab retry `script_failure` нет. `ps` для диагностики ограничен 20 секундами, его
+недоступность не заменяет исходную ошибку. В builders/toolbox и Python CI jobs у pip явно
+установлен socket timeout 60 секунд, включая build backend; runtime container не получает
+новых pip-настроек и по-прежнему не содержит pip. TLS и security gates сохранены.
+
+После отправки изменений нужен pipeline нового commit SHA. Runner permissions, volume reset
+и production deployment для этих изменений не требуются. Успех нового GitLab pipeline
+можно подтвердить только его реальным запуском, не локальной проверкой.
+
+Локальная проверка 03.11.2026: `make validate lint typecheck test` — **474 passed**,
+coverage **75.12%**; `make integration-test` — **87 passed**, 391.60s на настоящих
+PostgreSQL/Keycloak/CAS. Production build + non-root/read-only/live/401 smoke, Bandit,
+оба pip-audit, Gitleaks history/worktree и все три Compose configuration checks прошли.
+Fault injection regression отдельно проверяет предел повторов, отказ для постоянных ошибок,
+сохранение диагностики при пустом списке контейнеров и отсутствие секретов в выводе.
+Rootless Linux amd64 GitLab job с этими изменениями ещё не запускался.
 
 ### Нестабильный MFA-контекст тестового realm (Sprint 2)
 

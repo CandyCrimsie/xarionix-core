@@ -1,5 +1,6 @@
 ARG PYTHON_IMAGE=python:3.13.18-alpine3.24@sha256:7984cf56ceaddebe4fefeb75d64000b9f45d8b77b11a09b24524da6cdc3af0c8
 FROM ${PYTHON_IMAGE} AS builder
+ENV PIP_DEFAULT_TIMEOUT=60 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /build
 COPY requirements.lock ./
 RUN python -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir -r requirements.lock

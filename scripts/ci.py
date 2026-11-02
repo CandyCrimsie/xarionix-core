@@ -25,6 +25,66 @@ TRIVY_IMAGE = "aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a2
 GITLEAKS_IMAGE = "ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f"
 
 
+def compose_failure_kind(output: bytes) -> str:
+    """Classify captured Docker output without returning URLs, commands or secret values."""
+    message = output.decode(errors="replace").lower()
+    patterns = (
+        (
+            "tls_verification",
+            (
+                "certificate verify failed",
+                "certificate signed by unknown authority",
+                "certificate has expired",
+            ),
+        ),
+        ("disk_full", ("no space left on device",)),
+        ("out_of_memory", ("cannot allocate memory", "out of memory", "exit code: 137")),
+        (
+            "network_timeout",
+            (
+                "read timed out",
+                "readtimeout",
+                "i/o timeout",
+                "tls handshake timeout",
+                "context deadline exceeded",
+            ),
+        ),
+        (
+            "network_unavailable",
+            (
+                "temporary failure in name resolution",
+                "no such host",
+                "connection reset by peer",
+                "network is unreachable",
+            ),
+        ),
+        (
+            "upstream_unavailable",
+            ("429 too many requests", "toomanyrequests", "502 bad gateway", "503 service unavailable"),
+        ),
+        (
+            "dependency_resolution",
+            (
+                "no matching distribution found",
+                "resolutionimpossible",
+                "could not find a version that satisfies",
+            ),
+        ),
+    )
+    return next(
+        (kind for kind, markers in patterns if any(marker in message for marker in markers)), "unclassified"
+    )
+
+
+def retry_compose_build(arguments: list[str], kind: str, attempt: int) -> bool:
+    """One retry for an idempotent image build's explicit transient transport failure only."""
+    return (
+        arguments == ["build", "core"]
+        and attempt == 1
+        and kind in {"network_timeout", "network_unavailable", "upstream_unavailable"}
+    )
+
+
 def preflight() -> None:
     try:
         docker(["version", "--format", "{{.Server.Version}}"], timeout=20)

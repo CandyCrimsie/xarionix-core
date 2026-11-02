@@ -118,6 +118,102 @@ def test_docker_runner_preflight_fails_explicitly_not_as_a_skipped_success(monke
         ci.preflight()
 
 
+@pytest.mark.parametrize(
+    "message,kind",
+    [
+        (b"ReadTimeoutError: Read timed out", "network_timeout"),
+        (b"TLS handshake timeout", "network_timeout"),
+        (b"Temporary failure in name resolution", "network_unavailable"),
+        (b"429 Too Many Requests", "upstream_unavailable"),
+        (b"503 Service Unavailable", "upstream_unavailable"),
+        (b"certificate verify failed; ReadTimeoutError", "tls_verification"),
+        (b"No space left on device; Read timed out", "disk_full"),
+        (b"Cannot allocate memory", "out_of_memory"),
+        (b"No matching distribution found", "dependency_resolution"),
+        (b"compiler failed with a private URL/token that must not be echoed", "unclassified"),
+    ],
+)
+def test_compose_failure_classification_never_returns_raw_errors(message, kind):
+    assert ci.compose_failure_kind(message) == kind
+
+
+@pytest.mark.parametrize("kind", ["network_timeout", "network_unavailable", "upstream_unavailable"])
+def test_only_explicit_transient_image_build_failure_gets_one_retry(kind):
+    assert ci.retry_compose_build(["build", "core"], kind, 1)
+    assert not ci.retry_compose_build(["build", "core"], kind, 2)
+    assert not ci.retry_compose_build(["run", "--rm", "migrate"], kind, 1)
+    assert not ci.retry_compose_build(["up", "-d"], kind, 1)
+    assert not ci.retry_compose_build(["exec", "core"], kind, 1)
+
+
+@pytest.mark.parametrize(
+    "kind", ["tls_verification", "disk_full", "out_of_memory", "dependency_resolution", "unclassified"]
+)
+def test_permanent_build_failures_are_not_retried(kind):
+    assert not ci.retry_compose_build(["build", "core"], kind, 1)
+
+
+def test_pip_network_timeout_applies_to_ci_and_builders_before_dependency_installation():
+    config = validate.load_yaml(ROOT / ".gitlab-ci.yml")
+    assert config["variables"]["PIP_DEFAULT_TIMEOUT"] == "60"
+    for filename in ("Dockerfile", "deploy/ci/Dockerfile"):
+        contents = (ROOT / filename).read_text()
+        assert contents.index("ENV PIP_DEFAULT_TIMEOUT=60") < contents.index("pip install")
+    runtime = (ROOT / "Dockerfile").read_text().split(" AS runtime\n", 1)[1]
+    assert "PIP_DEFAULT_TIMEOUT" not in runtime
+
+
+@pytest.mark.parametrize(
+    "error,kind,attempts",
+    [
+        (b"ReadTimeoutError: Read timed out", "network_timeout", 2),
+        (b"certificate verify failed", "tls_verification", 1),
+        (b"No matching distribution found", "dependency_resolution", 1),
+        (b"No space left on device", "disk_full", 1),
+        (b"compiler failed", "unclassified", 1),
+    ],
+)
+def test_stack_build_failure_is_diagnosed_even_without_containers_and_never_becomes_success(
+    tmp_path, tmp_path_factory, monkeypatch, capsys, error, kind, attempts
+):
+    from integration import test_managed_stack as managed
+
+    (tmp_path / "compose.dev.yaml").write_text((ROOT / "compose.dev.yaml").read_text())
+    monkeypatch.setattr(managed, "ROOT", tmp_path)
+    monkeypatch.setattr(managed, "preflight", lambda: None)
+    monkeypatch.setenv("XARIONIX_RUN_DOCKER_TESTS", "1")
+    monkeypatch.setenv("CI_JOB_ID", "171")
+    monkeypatch.setenv("CI_PIPELINE_ID", "56")
+    calls, pauses = [], []
+    monkeypatch.setattr(managed.time, "sleep", pauses.append)
+
+    def execute(arguments, **kwargs):
+        operation = arguments[arguments.index("-f") + 2 :]
+        calls.append(operation)
+        if operation == ["build", "core"]:
+            return subprocess.CompletedProcess(arguments, 1, b"", error + b" private-credential-never-log")
+        if operation[0] == "ps":
+            return subprocess.CompletedProcess(arguments, 0, b"[]")
+        assert operation in [["config", "-q"], ["down", "--volumes", "--remove-orphans"]]
+        return subprocess.CompletedProcess(arguments, 0, b"")
+
+    monkeypatch.setattr(managed.subprocess, "run", execute)
+    fixture = managed.stack.__wrapped__(tmp_path_factory)
+    with pytest.raises(pytest.fail.Exception, match=kind):
+        next(fixture)
+    assert calls.count(["build", "core"]) == attempts
+    assert calls[-1] == ["down", "--volumes", "--remove-orphans"]
+    assert pauses == ([2] if attempts == 2 else [])
+    report = (tmp_path / "reports/integration-diagnostics.json").read_text()
+    entries = json.loads(report)
+    assert len(entries) == attempts
+    assert all(
+        item["phase"] == "build" and item["kind"] == kind and item["services"] == [] for item in entries
+    )
+    assert entries[-1]["retry_planned"] is False
+    assert "private-credential-never-log" not in report + capsys.readouterr().out
+
+
 @pytest.mark.parametrize("finding_report", [False, True])
 def test_trivy_failures_block_and_never_reuse_a_stale_success(tmp_path, monkeypatch, finding_report):
     monkeypatch.setattr(ci, "ROOT", tmp_path)
