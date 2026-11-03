@@ -9,7 +9,7 @@ import jwt
 import psycopg
 import pytest
 import test_managed_stack as managed
-from package_helpers import package
+from package_helpers import manifest_data, package
 from psycopg import sql
 
 from app.core.config import Settings
@@ -123,7 +123,89 @@ async def test_split_owner_migrator_runtime_real_upgrade_and_api_mutations(stack
                 sql.Identifier(migrator), sql.Identifier(database), sql.Literal(owner)
             )
         )
+    # A genuine 0007 -> 4C rehearsal includes existing 4A/4B records, not only empty tables.
+    migrate(migrator, migration_secret, "0007_instance_history")
+    preserved = {
+        table: uuid.uuid4()
+        for table in (
+            "identities",
+            "employees",
+            "invitations",
+            "audit_events",
+            "module_services",
+            "module_instances",
+            "package_publishers",
+            "publisher_signing_keys",
+            "module_packages",
+        )
+    }
+    data = manifest_data(module="legacy-module", publisher="upgrade-pub", namespace="upgradepkg")
+    _, trust, report = package(tmp_path / "pre-4c-package", data=data)
+    with psycopg.connect(**(bootstrap | {"dbname": database})) as db:
+        db.execute(
+            "INSERT INTO identities(id,issuer,subject,user_id,principal_type) VALUES (%s,%s,'pre-4c',%s,'human')",
+            (preserved["identities"], stack["issuer"], uid),
+        )
+        db.execute(
+            "INSERT INTO employees(id,company_id,user_id,display_name) VALUES (%s,%s,%s,'Preserved 4C employee')",
+            (preserved["employees"], cid, uid),
+        )
+        db.execute(
+            "INSERT INTO invitations(id,company_id,created_by_user_id,role,token_hash,expires_at) VALUES (%s,%s,%s,'member',%s,now()+interval '1 day')",
+            (preserved["invitations"], cid, uid, secrets.token_hex(32)),
+        )
+        db.execute(
+            "INSERT INTO audit_events(id,action,resource_type,details) VALUES (%s,'pre4c.seed','migration','{}')",
+            (preserved["audit_events"],),
+        )
+        db.execute(
+            "INSERT INTO module_services(id,module_key,name,issuer,subject,client_id,operations,registered_by_user_id) VALUES (%s,'legacy-module','Preserved 4A',%s,'pre-4c-service','pre4c-agent','[]',%s)",
+            (preserved["module_services"], stack["issuer"], uid),
+        )
+        db.execute(
+            "INSERT INTO module_instances(id,service_id,installation_key) VALUES (%s,%s,'pre4c-instance')",
+            (preserved["module_instances"], preserved["module_services"]),
+        )
+        db.execute(
+            "INSERT INTO package_publishers(id,publisher_id,display_name) VALUES (%s,'upgrade-pub','Preserved publisher')",
+            (preserved["package_publishers"],),
+        )
+        db.execute(
+            "INSERT INTO publisher_signing_keys(id,publisher_id,key_id,public_key,fingerprint) VALUES (%s,%s,'test-key',%s,%s)",
+            (
+                preserved["publisher_signing_keys"],
+                preserved["package_publishers"],
+                trust.keys[0].public_key,
+                report["key_fingerprint"],
+            ),
+        )
+        db.execute(
+            "INSERT INTO publisher_namespace_grants(namespace,publisher_id) VALUES ('upgradepkg',%s)",
+            (preserved["package_publishers"],),
+        )
+        db.execute(
+            "INSERT INTO module_packages(id,module_id,version,publisher_id,signing_key_id,package_sha256,manifest_sha256,size,manifest,imported_by_user_id) VALUES (%s,'legacy-module','1.0.0',%s,%s,%s,%s,%s,%s,%s)",
+            (
+                preserved["module_packages"],
+                preserved["package_publishers"],
+                preserved["publisher_signing_keys"],
+                report["package_sha256"],
+                report["manifest_sha256"],
+                report["size"],
+                json.dumps(data),
+                uid,
+            ),
+        )
     migrate(migrator, migration_secret, "head")
+    with psycopg.connect(**(bootstrap | {"dbname": database})) as db:
+        for table, identifier in preserved.items():
+            assert db.execute(
+                sql.SQL("SELECT id FROM {} WHERE id=%s").format(sql.Identifier(table)), (identifier,)
+            ).fetchone() == (identifier,)
+        assert db.execute("SELECT count(*) FROM module_installations").fetchone() == (0,)
+        assert db.execute("SELECT bool_and(permission_generation=1) FROM role_permissions").fetchone() == (
+            True,
+        )
     catalogs = {
         "permissions",
         "permission_namespaces",
@@ -156,8 +238,13 @@ async def test_split_owner_migrator_runtime_real_upgrade_and_api_mutations(stack
         operator.execute(
             sql.SQL("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO {}").format(sql.Identifier(runtime))
         )
+        operator.execute(
+            sql.SQL("REVOKE EXECUTE ON FUNCTION core_apply_module_catalog(uuid,text,uuid) FROM {}").format(
+                sql.Identifier(runtime)
+            )
+        )
         assert operator.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0007_instance_history",
+            "0010_instance_enrollment",
         )
         assert operator.execute("SELECT id FROM memberships WHERE company_id=%s", (cid,)).fetchone() == (
             membership,

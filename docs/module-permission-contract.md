@@ -1,5 +1,11 @@
 # Контракт namespaces будущих модулей
 
+**Реализовано в Sprint 4C:** [module permission activation](module-permission-activation.md).
+Deployment authority — отдельный operator и fixed SQL capability, не HTTP/GUC. Namespace owner
+неизменяем. Нет auto-grants; definitions/assignments имеют epoch, поэтому uninstall/reinstall и
+rollback не восстанавливают устаревшие grants. Effective authorization дополнительно проверяет
+installation/trust/exact dependencies/runtime. Нижеследующий контракт Sprint 3 остаётся базой.
+
 Sprint 4A: machine capabilities реестра (`core.modules.*`) намеренно **не** добавлены в company permission catalog и не активируют reserved namespaces. Service identity/control channel описаны в [module-communication.md](module-communication.md). Human RBAC, namespace ownership и будущий package registration остаются разными границами; machine connect не выдаёт пользовательское billing/ERP permission.
 
 Реализованы `permission_namespaces`, stable-key каталог и строгие `NamespaceManifest` / `PermissionDefinition`, `DeploymentAuthority`, `validate_registration`. Это validation/ownership foundation для доверенного deployment, **не** публичный registrar, Module Manager или `.xpkg` installer.

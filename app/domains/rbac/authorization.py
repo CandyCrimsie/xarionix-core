@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core import locking
 from app.core.access import Context, fail, require_human
@@ -61,6 +61,8 @@ async def effective(ctx: Context, company_id: UUID, *, allow_inactive: bool = Fa
             Permission.active.is_(True),
             PermissionNamespace.state == "active",
             Permission.scope == "company",
+            RolePermission.permission_generation == Permission.definition_generation,
+            func.core_module_available(Permission.namespace, ctx.config.modules_stale_seconds),
         )
     )
     return Decision(company, member, frozenset(permissions.all()))
@@ -95,6 +97,7 @@ async def require_grantable(
                         Permission.active.is_(True),
                         Permission.scope == "company",
                         PermissionNamespace.state == "active",
+                        func.core_module_available(Permission.namespace, ctx.config.modules_stale_seconds),
                     )
                 )
             ).all()
@@ -110,9 +113,12 @@ async def require_grantable(
         allowed = {item.key for item in available if item.owner_grantable}
     else:
         grants = await ctx.session.scalars(
-            select(PermissionDelegation.permission_key).where(
+            select(PermissionDelegation.permission_key)
+            .join(Permission, Permission.key == PermissionDelegation.permission_key)
+            .where(
                 PermissionDelegation.company_id == company_id,
                 PermissionDelegation.membership_id == decision.member.id,
+                PermissionDelegation.permission_generation == Permission.definition_generation,
             )
         )
         allowed = set(grants.all()) & decision.permissions

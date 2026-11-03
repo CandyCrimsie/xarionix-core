@@ -1,5 +1,10 @@
 # Verified package registry — не installer
 
+Sprint 4C добавляет **отдельный** [Module Manager](module-manager.md). Registry upload/verify
+по-прежнему не устанавливает пакет и не меняет RBAC. Установку подтверждают exact plan digest
+и MFA, применяет отдельный operator. Один module ID — одна текущая installation с exact package SHA;
+current trust повторно проверяется вне зависимости от исторического verified_at.
+
 ## API
 
 Все маршруты ниже находятся под `/api/v1/platform`, требуют свежий human Platform Admin/MFA:

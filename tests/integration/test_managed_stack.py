@@ -9,6 +9,7 @@ import asyncio
 import copy
 import json
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -240,6 +241,7 @@ def stack(tmp_path_factory):
             else "other"
         )
         safe = []
+        migration_error = None
         try:
             status = subprocess.run(
                 command + ["ps", "--all", "--format", "json"],
@@ -256,6 +258,18 @@ def stack(tmp_path_factory):
             safe = [
                 {key: item.get(key) for key in ("Service", "State", "Health", "ExitCode")} for item in items
             ]
+            if any(item.get("Service") == "migrate" and item.get("ExitCode") for item in safe):
+                migration_logs = subprocess.run(
+                    command + ["logs", "--no-color", "--tail", "200", "migrate"],
+                    env=environment,
+                    capture_output=True,
+                    timeout=20,
+                )
+                match = re.search(
+                    rb"psycopg\.(?:errors\.)?([A-Z][A-Za-z]{1,63})",
+                    migration_logs.stdout + migration_logs.stderr,
+                )
+                migration_error = match.group(1).decode() if match else "unclassified"
         except (OSError, subprocess.TimeoutExpired, ValueError, TypeError, AttributeError):
             pass
         reports = ROOT / "reports"
@@ -275,11 +289,12 @@ def stack(tmp_path_factory):
                 "attempt": attempt,
                 "retry_planned": retry,
                 "services": safe,
+                "migration_error_class": migration_error,
             }
         )
         path.write_text(json.dumps(history[-20:]))
         print(
-            f"Isolated stack phase={phase} kind={kind} exit={returncode} attempt={attempt} retry={retry}",
+            f"Isolated stack phase={phase} kind={kind} exit={returncode} attempt={attempt} retry={retry} migration_error_class={migration_error}",
             flush=True,
         )
 
@@ -506,7 +521,7 @@ def test_real_managed_keycloak_token_me_and_postgres_identity(stack):
         ).fetchone()
         assert row is not None and row[1] == stack["issuer"]
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0007_instance_history",
+            "0010_instance_enrollment",
         )
         assert connection.execute(
             "SELECT rolsuper FROM pg_roles WHERE rolname = current_user"

@@ -2,7 +2,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.api.v1.dependencies import Ctx, Limit, Offset
 from app.api.v1.rbac_schemas import (
@@ -38,7 +38,11 @@ async def catalog(ctx: Ctx, limit: Limit = 20, offset: Offset = 0) -> dict[str, 
         ctx,
         select(Permission)
         .join(PermissionNamespace)
-        .where(Permission.active.is_(True), PermissionNamespace.state == "active")
+        .where(
+            Permission.active.is_(True),
+            PermissionNamespace.state == "active",
+            func.core_module_available(Permission.namespace, ctx.config.modules_stale_seconds),
+        )
         .order_by(Permission.key),
         limit,
         offset,

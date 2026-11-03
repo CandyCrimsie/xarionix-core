@@ -1,5 +1,18 @@
 # Автономные модули — Sprint 4A
 
+Sprint 4C связывает existing ModuleInstance с global installation **явным** audited binding:
+instance UUID + exact package SHA + expected generation/binding revision. Одинакового module_key
+недостаточно. Heartbeat/agent version/protocol остаются реальными данными 4A. При disable/uninstall
+bound company metadata недоступна, но heartbeat/ACK и machine identity не отзываются автоматически.
+Непривязанные legacy services сохраняют поведение 4A. [Module Manager](module-manager.md),
+[безопасность и тестовый сценарий](sprint-4c-validation.md).
+
+Это относится только к **никогда не привязывавшимся** instances. `installation_managed`
+монотонно фиксирует explicit enrollment; после unbind или замены instance старый агент не
+получает legacy fallback. Его company metadata требует действующего current binding и
+availability установки; heartbeat/ACK при этом продолжают работать. Признак backfilled для
+существующих bindings в 0010 и не может быть сброшен UPDATE или delete/reinsert.
+
 Реализован control plane исходящего подключения, не универсальный бизнес-прокси и не Module Manager. Демонстрационный модуль — `scripts/module_agent.py`; у него нет входящего HTTP listener, Core DB credentials, Docker socket или Keycloak master-admin доступа.
 
 ```mermaid

@@ -1,5 +1,29 @@
 # Runtime / migrator: поддерживаемая maintenance-граница
 
+Sprint 4C вводит третью, **отдельную** restricted installer LOGIN и две NOLOGIN capability роли.
+[Точная процедура](module-installation-executor.md), SQL `deploy/postgres/module-executor.sql`.
+Не выдавайте HTTP runtime `EXECUTE ON ALL FUNCTIONS`: обязательно исключить
+`core_apply_module_catalog(uuid,text,uuid)`. Runtime не должен быть участником
+`xarionix_module_executor` или `xarionix_module_catalog`; у catalog owner вообще нет участников.
+Installer не получает DDL/catalog DML, пароль мигратора или DELETE audit. Existing dev не
+провизионируется автоматически. Bootstrap выполняется DBA явно, не в install.sh/Alembic/Core.
+
+После upgrade 4C DBA выдаёт существующему runtime только новые необходимые ACL
+(имя `core_runtime` заменить на фактическое). Миграции не угадывают имена LOGIN ролей:
+
+```sql
+GRANT SELECT ON module_installations,module_dependency_pins,module_install_plans,
+  module_install_operations,module_installation_history,module_instance_bindings TO core_runtime;
+GRANT INSERT,UPDATE ON module_install_plans,module_instance_bindings TO core_runtime;
+GRANT EXECUTE ON FUNCTION core_module_available(text,integer),core_module_authorized(uuid,integer) TO core_runtime;
+REVOKE ALL ON FUNCTION core_apply_module_catalog(uuid,text,uuid) FROM core_runtime;
+```
+
+Новые protected installation/operation/history таблицы не требуют runtime DML. Epoch trigger
+после `0009_catalog_read_checks` использует обычный SELECT permissions, не `FOR SHARE`, который
+потребовал бы UPDATE privilege. Конкурентная смена epoch оставляет старое назначение неэффективным,
+а не даёт дополнительный доступ.
+
 Существующие dev/production базы **не переводятся автоматически**. Их `core_app` по-прежнему может
 владеть таблицами; это отражается `python -m scripts.db_privileges`, а не скрывается словом hardening.
 В 4B подготовлены отдельные Compose credentials:

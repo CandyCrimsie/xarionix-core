@@ -46,6 +46,7 @@ class Permission(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     protected: Mapped[bool] = mapped_column(Boolean, default=False)
     owner_grantable: Mapped[bool] = mapped_column(Boolean, default=False)
+    definition_generation: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
 
 class Role(Timestamps, Base):
@@ -84,6 +85,7 @@ class RolePermission(Base):
     permission_key: Mapped[str] = mapped_column(
         ForeignKey("permissions.key", ondelete="RESTRICT"), primary_key=True
     )
+    permission_generation: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
 
 class MembershipRole(Base):
@@ -128,6 +130,7 @@ class PermissionDelegation(Base):
     )
     role_scope: Mapped[str] = mapped_column(String(24), default="custom_roles", server_default="custom_roles")
     member_scope: Mapped[str] = mapped_column(String(24), default="non_owners", server_default="non_owners")
+    permission_generation: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
 
 class InvitationRole(Base):

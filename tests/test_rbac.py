@@ -160,6 +160,14 @@ async def test_role_creation_template_copy_and_audit(administrator):
         key="core.template.field_engineer", version=1, name="Инженер", permissions=["core.employees.read"]
     )
     ctx.session.get.return_value = template
+    original_get = ctx.session.get
+
+    async def get_model(model, identifier, **kwargs):
+        if model is Permission:
+            return Permission(key=identifier, definition_generation=1)
+        return template
+
+    original_get.side_effect = get_model
     value = await service.create_role(
         ctx,
         company.id,
@@ -292,6 +300,9 @@ async def test_delegation_is_audited_and_owned_by_protected_authority(administra
     ctx, company, member, _ = administrator
     member.role = "member"
     ctx.session.scalar.return_value = member
+    ctx.session.get.side_effect = lambda model, identifier, **kwargs: (
+        Permission(key=identifier, definition_generation=1) if model is Permission else ctx.user
+    )
     await service.set_delegation(ctx, company.id, member.id, {"core.employees.read"})
     assert ctx.session.added[-1].action == "permission.delegation_changed"
     authorization.require.assert_awaited_once_with(ctx, company.id, "core.permissions.delegate")

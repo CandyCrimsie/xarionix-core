@@ -4,6 +4,14 @@ def load_models() -> None:
     from app.domains.companies.model import Company, CompanyRequest  # noqa: F401
     from app.domains.employees.model import Employee  # noqa: F401
     from app.domains.identity.model import Identity  # noqa: F401
+    from app.domains.installations.model import (  # noqa: F401
+        ModuleDependencyPin,
+        ModuleInstallation,
+        ModuleInstallationHistory,
+        ModuleInstallOperation,
+        ModuleInstallPlan,
+        ModuleInstanceBinding,
+    )
     from app.domains.invitations.model import Invitation  # noqa: F401
     from app.domains.memberships.model import Membership  # noqa: F401
     from app.domains.modules.model import (  # noqa: F401

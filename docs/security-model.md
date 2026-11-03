@@ -1,5 +1,11 @@
 # Модель безопасности
 
+Sprint 4C: [installation threat boundary](module-installation-security.md),
+[отдельная DB capability исполнителя](module-installation-executor.md). Обычный HTTP role не
+получает EXECUTE catalog function или catalog DML. Legacy dev table owner сохраняет DDL-риск;
+его credentials/ownership не заменяются автоматически. Approval привязан к immutable digest,
+текущим admin/MFA policy и expiry; JWT не хранится в jobs.
+
 ## Machine boundary Sprint 4A
 
 Отдельный JWT audience/purpose и registry binding issuer/sub/azp отделяют machine от human/JIT. Company machine scope не Membership. Статус service/instance проверяется в PostgreSQL на каждом запросе; revoke действует после COMMIT без ожидания JWT expiry. Лишь Platform Admin с существующей MFA-policy регистрирует/отзывает доверие и ставит команды. Нет публичного self-registration, SSRF/callback URL, shell execution или Core DB credentials в агенте. Полный [threat model](module-threat-model.md), [auth contract](service-authentication.md) и [delivery semantics](module-control-channel.md).

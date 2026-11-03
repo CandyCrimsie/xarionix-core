@@ -66,8 +66,8 @@ def require_mfa(ctx: Context) -> None:
         fail(403, "configured_recent_mfa_required")
 
 
-async def require_platform(ctx: Context) -> None:
-    await locking.administration(ctx.session, shared=not ctx.mutating)
+async def require_platform(ctx: Context, *, serialize: bool = True) -> None:
+    await locking.administration(ctx.session, shared=not (ctx.mutating and serialize))
     await ctx.session.refresh(ctx.user)
     require_human(ctx)
     admin = await ctx.session.get(PlatformAdmin, ctx.user.id)

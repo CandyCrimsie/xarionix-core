@@ -6,7 +6,14 @@ from sqlalchemy import delete, func, select
 from app.core.access import Context, audit, fail, human_user
 from app.domains.memberships.model import Membership
 from app.domains.rbac import authorization
-from app.domains.rbac.model import MembershipRole, PermissionDelegation, Role, RolePermission, RoleTemplate
+from app.domains.rbac.model import (
+    MembershipRole,
+    Permission,
+    PermissionDelegation,
+    Role,
+    RolePermission,
+    RoleTemplate,
+)
 
 
 async def role(ctx: Context, company_id: UUID, role_id: UUID) -> Role:
@@ -57,7 +64,17 @@ async def replace_permissions(ctx: Context, value: Role, requested: set[str]) ->
         )
     )
     for key in sorted(requested):
-        ctx.session.add(RolePermission(company_id=value.company_id, role_id=value.id, permission_key=key))
+        permission = await ctx.session.get(Permission, key)
+        if permission is None:
+            fail(422, "unknown_or_unavailable_permission")
+        ctx.session.add(
+            RolePermission(
+                company_id=value.company_id,
+                role_id=value.id,
+                permission_key=key,
+                permission_generation=permission.definition_generation,
+            )
+        )
 
 
 async def create_role(
@@ -138,7 +155,19 @@ async def set_permissions(
     value = await role(ctx, company_id, role_id)
     editable(value, expected_version)
     current = await permissions(ctx, value)
-    await authorization.require_grantable(ctx, company_id, current | requested)
+    # Stale/inactive module grants can be removed, but cannot be silently re-approved.
+    available_current = set(
+        (
+            await ctx.session.scalars(
+                select(Permission.key).where(
+                    Permission.key.in_(current),
+                    Permission.active.is_(True),
+                    func.core_module_available(Permission.namespace, ctx.config.modules_stale_seconds),
+                )
+            )
+        ).all()
+    )
+    await authorization.require_grantable(ctx, company_id, available_current | requested)
     if requested - current:
         own = await ctx.session.scalar(
             select(MembershipRole.role_id).where(
@@ -244,8 +273,16 @@ async def set_delegation(ctx: Context, company_id: UUID, member_id: UUID, reques
         )
     )
     for key in sorted(requested):
+        permission = await ctx.session.get(Permission, key)
+        if permission is None:
+            fail(422, "unknown_or_unavailable_permission")
         ctx.session.add(
-            PermissionDelegation(company_id=company_id, membership_id=member_id, permission_key=key)
+            PermissionDelegation(
+                company_id=company_id,
+                membership_id=member_id,
+                permission_key=key,
+                permission_generation=permission.definition_generation,
+            )
         )
     audit(
         ctx,

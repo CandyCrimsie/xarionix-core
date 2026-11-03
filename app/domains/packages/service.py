@@ -35,26 +35,24 @@ async def package(ctx: Context, package_id: UUID) -> ModulePackage:
 
 
 async def trust_store(ctx: Context) -> TrustStore:
-    rows = (
-        await ctx.session.execute(
-            select(PublisherSigningKey, PackagePublisher)
-            .join(PackagePublisher, PublisherSigningKey.publisher_id == PackagePublisher.id)
-            .with_for_update(read=True)
-            .limit(1025)
-        )
-    ).all()
+    query = (
+        select(PublisherSigningKey, PackagePublisher)
+        .join(PackagePublisher, PublisherSigningKey.publisher_id == PackagePublisher.id)
+        .limit(1025)
+    )
+    grants_query = (
+        select(PublisherNamespaceGrant).where(PublisherNamespaceGrant.status == "active").limit(65537)
+    )
+    # Operator installation snapshots hold administration SHARE; all trust mutations
+    # hold administration EX. FOR SHARE would unnecessarily require UPDATE authority
+    # on the trust catalog for the separate read-only installer identity.
+    if not ctx.operator:
+        query = query.with_for_update(read=True)
+        grants_query = grants_query.with_for_update(read=True)
+    rows = (await ctx.session.execute(query)).all()
     if len(rows) > 1024:
         fail(503, "trust_store_capacity_exceeded")
-    grants = list(
-        (
-            await ctx.session.scalars(
-                select(PublisherNamespaceGrant)
-                .where(PublisherNamespaceGrant.status == "active")
-                .with_for_update(read=True)
-                .limit(65537)
-            )
-        ).all()
-    )
+    grants = list((await ctx.session.scalars(grants_query)).all())
     if len(grants) > 65536:
         fail(503, "namespace_capacity_exceeded")
     by_publisher: dict[UUID, list[str]] = {}
@@ -175,7 +173,24 @@ async def view(ctx: Context, value: ModulePackage, store: TrustStore) -> dict[st
 async def namespace_owner(ctx: Context, manifest: Manifest) -> bool:
     # Existing active/reserved catalog ownership is not superseded by a publisher grant.
     value = await ctx.session.get(PermissionNamespace, manifest.permissions.namespace)
-    return value is None or (value.owner == manifest.module.id and value.state != "disabled")
+    if value is None:
+        return True
+    if value.owner != manifest.module.id:
+        return False
+    if value.state != "disabled":
+        return True
+    # A managed disabled installation must still accept trusted update packages.
+    from app.domains.installations.model import ModuleInstallation
+
+    return (
+        await ctx.session.scalar(
+            select(ModuleInstallation.id).where(
+                ModuleInstallation.module_id == manifest.module.id,
+                ModuleInstallation.namespace == manifest.permissions.namespace,
+            )
+        )
+        is not None
+    )
 
 
 async def dependency_report(ctx: Context, value: ModulePackage, store: TrustStore) -> dict[str, Any]:

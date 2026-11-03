@@ -17,7 +17,7 @@ lint:
 typecheck:
 	.venv/bin/mypy app scripts migrations
 test:
-	.venv/bin/pytest -vv -m "not integration" --junitxml=reports/unit.xml --cov=app --cov=scripts --cov-report=term-missing --cov-report=xml:reports/coverage.xml --cov-fail-under=70
+	.venv/bin/python -m pytest -vv -m "not integration" --junitxml=reports/unit.xml --cov=app --cov=scripts --cov-report=term-missing --cov-report=xml:reports/coverage.xml --cov-fail-under=70
 security:
 	.venv/bin/bandit -q -r app scripts
 	.venv/bin/pip-audit -r requirements.lock --strict --timeout 60 --progress-spinner off
@@ -40,7 +40,7 @@ dev-test:
 	.venv/bin/python -m scripts.ci dev-check
 integration-test:
 	.venv/bin/python -m scripts.ci preflight
-	XARIONIX_RUN_DOCKER_TESTS=1 .venv/bin/pytest -vv -m integration --junitxml=reports/integration.xml
+	XARIONIX_RUN_DOCKER_TESTS=1 .venv/bin/python -m pytest -vv -m integration --junitxml=reports/integration.xml
 locking-benchmark:
 	XARIONIX_RUN_DOCKER_TESTS=1 XARIONIX_RUN_LOCK_BENCHMARKS=1 .venv/bin/pytest tests/integration/test_managed_stack.py -vv -k preserves_legacy_identity
 docker-build:

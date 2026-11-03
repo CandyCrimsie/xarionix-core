@@ -2,7 +2,17 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, UniqueConstraint, Uuid, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    UniqueConstraint,
+    Uuid,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -62,6 +72,7 @@ class ModuleInstance(Timestamps, Base):
     health: Mapped[str | None] = mapped_column(String(16))
     agent_version: Mapped[str | None] = mapped_column(String(32))
     protocol_version: Mapped[int | None]
+    installation_managed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
 
 class ModuleCompanyScope(Timestamps, Base):

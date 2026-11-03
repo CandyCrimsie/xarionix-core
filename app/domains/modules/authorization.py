@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.access import fail
@@ -70,7 +70,20 @@ async def require(
 
 
 async def company(ctx: MachineContext, instance_id: UUID, company_id: UUID, operation: str) -> Company:
-    await require(ctx, instance_id, operation, write=False)
+    _, instance = await require(ctx, instance_id, operation, write=False)
+    from app.domains.installations.model import ModuleInstallation, ModuleInstanceBinding
+
+    bound = await ctx.session.scalar(
+        select(ModuleInstallation)
+        .join(ModuleInstanceBinding, ModuleInstanceBinding.installation_id == ModuleInstallation.id)
+        .where(ModuleInstanceBinding.instance_id == instance_id)
+    )
+    if instance.installation_managed and bound is None:
+        fail(403, "module_installation_binding_required")
+    if bound and not await ctx.session.scalar(
+        select(func.core_module_available(bound.namespace, ctx.config.modules_stale_seconds))
+    ):
+        fail(403, "module_installation_unavailable")
     scope = await ctx.session.scalar(
         select(ModuleCompanyScope)
         .where(ModuleCompanyScope.instance_id == instance_id, ModuleCompanyScope.company_id == company_id)

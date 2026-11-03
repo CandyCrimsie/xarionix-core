@@ -1,4 +1,9 @@
-# Архитектура Core — Sprint 4B
+# Архитектура Core — Sprint 4C
+
+Sprint 4C добавляет global module control plane, не runtime orchestrator. HTTP готовит immutable
+plans/approval; отдельный operator с отдельной SQL identity повторно проверяет bytes/trust и
+атомарно меняет installation/catalog/history/audit. Нет module import/exec, per-company installation
+или auto-grants. [Фактическая архитектура](module-manager.md), [executor](module-installation-executor.md).
 
 ## Границы
 

@@ -56,7 +56,7 @@ def admin(actors, method, path, **kwargs):
 
 @pytest.fixture
 def modules(actors, stack):
-    def create(*, operations=None):
+    def create(*, operations=None, module_key="test-autonomous-module"):
         name, secret = "module-" + uuid.uuid4().hex, secrets.token_hex(32)
         managed.token(
             stack, "integration-admin"
@@ -88,7 +88,7 @@ def modules(actors, stack):
             "POST",
             "/module-services",
             json={
-                "module_key": "test-autonomous-module",
+                "module_key": module_key,
                 "name": "Тестовый модуль",
                 "issuer": claims["iss"],
                 "subject": claims["sub"],

@@ -1,5 +1,14 @@
 # Xarionix Core
 
+Sprint 4C: глобальные module installations, immutable install plans/MFA approval,
+отдельный trusted operator executor, exact dependency pins, permission epochs,
+explicit autonomous instance binding и transactional recovery. Пакеты **не исполняются**,
+standard runtime не развёртывается; resources-only metadata mode не означает provisioning.
+[Module Manager](docs/module-manager.md), [lifecycle](docs/module-installation-lifecycle.md),
+[executor/DB bootstrap](docs/module-installation-executor.md), [security](docs/module-installation-security.md),
+[dependencies](docs/module-dependencies.md), [RBAC](docs/module-permission-activation.md),
+[recovery](docs/module-installation-recovery.md), [проверки и границы 4D](docs/sprint-4c-validation.md).
+
 Sprint 4B: строгий `.xpkg` V1, offline Ed25519 keygen/pack/sign/verify, publisher/key/namespace trust,
 потоковый admin/MFA upload, PostgreSQL verified registry и private CAS с reverify/recovery.
 Это **не installer**, не runtime loader и не лицензирование. [Спецификация](docs/xpkg-specification.md),
