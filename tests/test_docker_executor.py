@@ -151,9 +151,23 @@ def test_artifact_destination_symlinks_are_refused(tmp_path):
         job.restore_artifacts(artifact(), tmp_path / "reports", job.REPORTS)
 
 
-@pytest.mark.parametrize("failed", [False, True])
+def exited_state(exit_code=0):
+    return {
+        "Status": "exited",
+        "Running": False,
+        "Dead": False,
+        "OOMKilled": False,
+        "Error": "",
+        "ExitCode": exit_code,
+    }
+
+
+@pytest.mark.parametrize(
+    "failure,stream_exit",
+    [("", 0), ("", 1), ("controller", 0), ("controller", 1), ("wait", 1), ("start", 0)],
+)
 def test_rootless_job_cleans_only_its_workspace_and_passes_no_secret_values_in_argv(
-    tmp_path, monkeypatch, failed
+    tmp_path, monkeypatch, capsys, failure, stream_exit
 ):
     monkeypatch.setattr(job, "ROOT", tmp_path)
     monkeypatch.setattr(job, "preflight", lambda: None)
@@ -170,18 +184,37 @@ def test_rootless_job_cleans_only_its_workspace_and_passes_no_secret_values_in_a
             )
         if "inspect" in arguments:
             return subprocess.CompletedProcess(
-                arguments, 0, json.dumps({"ExitCode": 1 if failed else 0}).encode()
+                arguments, 0, json.dumps(exited_state(1 if failure == "controller" else 0)).encode()
             )
+        if arguments[1] == "start":
+            assert "--attach" not in arguments and kwargs.get("check", True)
+            if failure == "start":
+                raise RuntimeError("Controller start failed")
+        if arguments[1] == "logs":
+            return subprocess.CompletedProcess(arguments, stream_exit, b"")
+        if arguments[1] == "wait":
+            assert kwargs.get("check", True)
+            if failure == "wait":
+                raise RuntimeError("Docker wait failed")
+            return subprocess.CompletedProcess(arguments, 0, b"1\n" if failure == "controller" else b"0\n")
         if "cp" in arguments and arguments[-1] == "-":
-            return subprocess.CompletedProcess(arguments, 1, b"")
+            kwargs["stdout"].write(artifact().read())
         return subprocess.CompletedProcess(arguments, 0, b"")
 
     monkeypatch.setattr(job, "command", command)
-    if failed:
-        with pytest.raises(RuntimeError, match="failed in the rootless"):
+    if failure:
+        with pytest.raises(RuntimeError, match="failed"):
             job.run_job("publish")
     else:
         job.run_job("publish")
+    assert (tmp_path / "reports/integration.xml").exists() == (failure != "start")
+    if failure != "start":
+        assert (tmp_path / "reports/integration.xml").read_text() == "xml"
+        assert (
+            next(i for i, call in enumerate(calls) if call[1] == "start")
+            < next(i for i, call in enumerate(calls) if call[1] == "logs")
+            < next(i for i, call in enumerate(calls) if call[1] == "wait")
+        )
     create = next(call for call in calls if call[1] == "create")
     assert "CI_REGISTRY_PASSWORD" in create
     assert all("test-job-credential-only-environment" not in str(call) for call in calls)
@@ -189,6 +222,79 @@ def test_rootless_job_cleans_only_its_workspace_and_passes_no_secret_values_in_a
     assert "--privileged" not in create
     assert any(call[1:3] == ["rm", "--force"] for call in calls)
     assert calls[-1][:3] == ["docker", "volume", "rm"]
+    output = capsys.readouterr()
+    assert "test-job-credential-only-environment" not in output.out + output.err
+    assert ("confirmed controller exit 0" in output.out) == (not failure and stream_exit != 0)
+
+
+@pytest.mark.parametrize("exit_code", [0, 1, 137])
+@pytest.mark.parametrize("stream_exit", [0, 1, 125])
+def test_controller_result_uses_wait_and_inspect_not_the_log_transport(
+    monkeypatch, capsys, exit_code, stream_exit
+):
+    calls = []
+    times = iter([100.0, 104.0])
+    monkeypatch.setattr(job.time, "monotonic", lambda: next(times))
+
+    def command(arguments, **kwargs):
+        calls.append(arguments[1])
+        if arguments[1] == "logs":
+            assert kwargs == {"capture": False, "timeout": 10, "check": False}
+            return subprocess.CompletedProcess(arguments, stream_exit)
+        if arguments[1] == "wait":
+            assert kwargs == {"timeout": 6}
+            return subprocess.CompletedProcess(arguments, 0, f"{exit_code}\n".encode())
+        return subprocess.CompletedProcess(arguments, 0, json.dumps(exited_state(exit_code)).encode())
+
+    monkeypatch.setattr(job, "command", command)
+    if exit_code:
+        with pytest.raises(RuntimeError, match=f"container \\(exit {exit_code}\\)"):
+            job.wait_for_controller("isolated-controller", "integration", timeout=10)
+    else:
+        job.wait_for_controller("isolated-controller", "integration", timeout=10)
+    assert calls == ["logs", "wait", "inspect"]
+    assert ("confirmed controller exit 0" in capsys.readouterr().out) == (exit_code == 0 and stream_exit != 0)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {},
+        None,
+        [],
+        {**exited_state(), "Status": "created"},
+        {**exited_state(), "Status": "running", "Running": True},
+        {**exited_state(), "Running": True},
+        {**exited_state(), "Dead": True},
+        {**exited_state(), "OOMKilled": True},
+        {**exited_state(), "Error": "private-error-payload"},
+        {**exited_state(), "ExitCode": 1},
+        {**exited_state(), "ExitCode": "0"},
+        {**exited_state(), "ExitCode": False},
+    ],
+)
+def test_zero_wait_never_accepts_unconfirmed_or_abnormal_state(monkeypatch, capsys, state):
+    def command(arguments, **kwargs):
+        output = json.dumps(state).encode() if arguments[1] == "inspect" else b"0\n"
+        return subprocess.CompletedProcess(arguments, 0, output)
+
+    monkeypatch.setattr(job, "command", command)
+    with pytest.raises(RuntimeError, match="no confirmed normal") as error:
+        job.wait_for_controller("isolated-controller", "integration")
+    output = capsys.readouterr()
+    assert "private-error-payload" not in str(error.value) + output.out + output.err
+
+
+@pytest.mark.parametrize("wait_output", [b"", b"0\n1", b"-1", b"256", b"private-wait-payload", b"\xff"])
+def test_invalid_wait_response_cannot_be_treated_as_success(monkeypatch, capsys, wait_output):
+    def command(arguments, **kwargs):
+        return subprocess.CompletedProcess(arguments, 0, wait_output)
+
+    monkeypatch.setattr(job, "command", command)
+    with pytest.raises((RuntimeError, UnicodeDecodeError)) as error:
+        job.wait_for_controller("isolated-controller", "integration")
+    output = capsys.readouterr()
+    assert "private-wait-payload" not in str(error.value) + output.out + output.err
 
 
 @pytest.mark.parametrize("kind", ["compose", "secrets", "scan", "build", "publish", "integration"])

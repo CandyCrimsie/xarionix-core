@@ -74,6 +74,52 @@ sudo python3 scripts/configure_docker_runner.py --path /srv/gitlab-runner/config
 4. Controller использует socket **только rootless service** `/run/user/1000/docker.sock` и `--network host` **только внутри DinD namespace**. Это не socket и не host network физической VM; `localhost` остаётся внутри данного job. Внешнее соединение по TCP остаётся с TLS.
 5. Возвращает только allowlisted regular artifacts (`reports`/`dist`), запрещает links/path traversal и удаляет собственный controller/volume. Job teardown уничтожает отдельный DinD service. Нет global prune.
 
+### Job 189: тесты прошли, но обёртка вернула failure
+
+В сохранённом trace job №189 на commit `346e55c` все **106 integration tests прошли**
+за 852.30 секунды. Затем появилась строка `integration failed in the rootless job
+container (exit 0)`. Это не падение тестов, миграций или Keycloak: старая обёртка
+объединяла через `or` код процесса `docker start --attach` и `.State.ExitCode` контейнера,
+но в сообщении показывала только второй. Из лога следует ненулевой exit Docker CLI
+при нулевом exit контейнера; точный код и низкоуровневая причина attach-сбоя в нём
+не сохранены. Называть его OOM или сетевым timeout по этому trace нельзя.
+
+Запуск теперь отделён от чтения вывода: проверяемый `docker start`, затем
+`docker logs --follow`, затем [`docker wait`](https://docs.docker.com/reference/cli/docker/container/wait/)
+и повторный `inspect`. CLI attach может вернуть ошибку потока отдельно от результата
+контейнера — это видно в [исходниках закреплённого Docker CLI](https://github.com/docker/cli/blob/v29.9.2/cli/command/container/start.go).
+Успех разрешён только при совпадающем нулевом exit из wait/inspect, `Status=exited`,
+`Running=false`, `Dead=false`, `OOMKilled=false` и пустом `State.Error`.
+Сбой log transport отдельно сообщается в trace, не подменяя подтверждённый результат
+контейнера. Работающий/не запущенный контейнер, ненулевой exit, OOM, некорректный ответ,
+сбой wait/inspect и timeout по-прежнему блокируют job. Для logs+wait общий deadline;
+retry тестов или `allow_failure` не добавлены. Отчёты копируются и при ошибке ожидания.
+Raw State.Error, credentials и Docker config в диагностику не выводятся.
+
+`reports/integration-diagnostics.json` создаётся при ошибке самого тестового стека.
+В job №189 такой ошибки не было, поэтому warning об отсутствии этого дополнительного
+файла не является причиной failure; JUnit был сформирован и загружен успешно.
+
+Regression-тесты проверяют сбой log transport при успешном/неуспешном контейнере,
+расхождения wait/inspect, незавершённое состояние, OOM, безопасные сообщения,
+сохранение JUnit и cleanup. Дополнительно четыре opt-in Docker tests запускают
+настоящие короткоживущие non-root/read-only контейнеры с exit 0/23, в том числе
+с искусственным обрывом только log stream; wait/inspect остаются настоящими.
+Они включены в обычный integration job без отдельного сервиса и без доступа к dev DB.
+
+Для применения нужен pipeline **нового commit SHA** после отправки изменений;
+Retry старого job №189 использует прежнюю обёртку. Настройки Runner, базы и volumes
+менять не требуется. Новый GitLab pipeline этим локальным исправлением не запускался.
+
+Локальная проверка 03.11.2026: `make check` прошёл — **554 unit/API tests**,
+coverage **73.64%**, Ruff/format/MyPy/shell, Bandit, оба pip-audit и все три
+Compose-конфигурации. `XARIONIX_RUN_DOCKER_TESTS=1 .venv/bin/python -m pytest
+tests/integration/test_docker_controller.py -vv` — **4 passed** на Docker Desktop
+29.9.2/Linux arm64, с реальными start/wait/inspect и изолированными контейнерами.
+Полные PostgreSQL/Keycloak integration tests повторно в этом исправлении не запускались;
+их результат **106 passed** выше относится к предоставленному GitLab trace job №189,
+а не к новому прогону. Commit/push и изменения серверного Runner не выполнялись.
+
 Перед сбором integration-тестов controller устанавливает **текущий переданный checkout**:
 `python -m pip install --no-deps --editable .`. Toolbox содержит только locked dependencies,
 а не метаданные самого `xarionix-core`; без этого `app.version` не может получить версию

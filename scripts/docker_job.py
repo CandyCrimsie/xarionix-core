@@ -61,7 +61,7 @@ def command(
     arguments: list[str],
     *,
     capture: bool = True,
-    timeout: int = 120,
+    timeout: float = 120,
     stdin: BinaryIO | None = None,
     stdout: BinaryIO | None = None,
     check: bool = True,
@@ -250,6 +250,38 @@ def inner(job: str) -> None:
             ci.cleanup_tests()
 
 
+def wait_for_controller(name: str, job: str, *, timeout: float = 2400) -> None:
+    """A log transport exit is not the controller exit; confirm completion with the daemon."""
+    deadline = time.monotonic() + timeout
+    streamed = command(["docker", "logs", "--follow", name], capture=False, timeout=timeout, check=False)
+    log("Confirming controller completion with docker wait and inspect")
+    waited = command(["docker", "wait", name], timeout=max(1, deadline - time.monotonic()))
+    exit_text = waited.stdout.decode().strip()
+    if not exit_text.isascii() or not exit_text.isdecimal() or not 0 <= int(exit_text) <= 255:
+        raise RuntimeError(f"{job} returned an invalid container exit status")
+    exit_code = int(exit_text)
+    state = json.loads(command(["docker", "inspect", "--format", "{{json .State}}", name]).stdout)
+    if not (
+        isinstance(state, dict)
+        and state.get("Status") == "exited"
+        and state.get("Running") is False
+        and state.get("Dead") is False
+        and state.get("OOMKilled") is False
+        and state.get("Error") == ""
+        and type(state.get("ExitCode")) is int
+        and state["ExitCode"] == exit_code
+    ):
+        # Never print raw State.Error or Docker stderr: either may contain private configuration.
+        raise RuntimeError(f"{job} has no confirmed normal container completion")
+    if exit_code:
+        raise RuntimeError(f"{job} failed in the rootless job container (exit {exit_code})")
+    if streamed.returncode:
+        log(
+            f"Log streaming ended with CLI exit {streamed.returncode}; "
+            "docker wait and inspect confirmed controller exit 0"
+        )
+
+
 def run_job(job: str) -> None:
     if job not in JOBS:
         raise ValueError("Unknown Docker job")
@@ -310,22 +342,23 @@ def run_job(job: str) -> None:
             archive_source(archive, publish=job == "publish")
             command(["docker", "cp", "--archive", "-", name + ":" + mountpoint], stdin=archive)
         log("Source/history transferred; ignored configuration and clone credentials excluded")
-        result = command(["docker", "start", "--attach", name], capture=False, timeout=2400, check=False)
-        state = json.loads(command(["docker", "inspect", "--format", "{{json .State}}", name]).stdout)
-        for folder, allowed in (("reports", REPORTS), ("dist", DIST if job == "build" else set())):
-            if not allowed:
-                continue
-            with tempfile.TemporaryFile() as archive:
-                copied = command(
-                    ["docker", "cp", name + ":" + mountpoint + "/" + folder + "/.", "-"],
-                    stdout=archive,
-                    check=False,
-                )
-                if copied.returncode == 0:
-                    archive.seek(0)
-                    restore_artifacts(archive, ROOT / folder, allowed)
-        if result.returncode or state.get("ExitCode"):
-            raise RuntimeError(f"{job} failed in the rootless job container (exit {state.get('ExitCode')})")
+        command(["docker", "start", name])
+        try:
+            wait_for_controller(name, job)
+        finally:
+            # Preserve reports even when wait/inspect fail, not only for failed tests.
+            for folder, allowed in (("reports", REPORTS), ("dist", DIST if job == "build" else set())):
+                if not allowed:
+                    continue
+                with tempfile.TemporaryFile() as archive:
+                    copied = command(
+                        ["docker", "cp", name + ":" + mountpoint + "/" + folder + "/.", "-"],
+                        stdout=archive,
+                        check=False,
+                    )
+                    if copied.returncode == 0:
+                        archive.seek(0)
+                        restore_artifacts(archive, ROOT / folder, allowed)
         if job == "build" and not all((ROOT / "dist" / file).is_file() for file in DIST):
             raise RuntimeError("Build succeeded but required image artifacts are missing")
         log(f"{job} finished successfully; safe artifacts copied back")
