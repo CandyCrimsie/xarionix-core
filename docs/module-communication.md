@@ -1,5 +1,9 @@
 # Автономные модули — Sprint 4A
 
+4D Deployment Agent — [другой principal/protocol](deployment-agent.md), с отдельной audience,
+host binding и job allowlist. Он не расширяет 4A ping/get_status до shell/Docker executor.
+Offline OCI runtime не получает бизнес-машинный JWT. Autonomous binding/heartbeat ниже сохранены.
+
 Sprint 4C связывает existing ModuleInstance с global installation **явным** audited binding:
 instance UUID + exact package SHA + expected generation/binding revision. Одинакового module_key
 недостаточно. Heartbeat/agent version/protocol остаются реальными данными 4A. При disable/uninstall

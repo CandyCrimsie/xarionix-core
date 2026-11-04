@@ -4,7 +4,11 @@
 
 Сначала примените `alembic upgrade head` отдельным мигратором. `0008_module_installations`
 не создаёт LOGIN roles и не требует CREATEROLE. Без явного provision apply fail-closed.
-Текущий head — `0010_instance_enrollment`; 0009/0010 также безопасно обновляют уже применённую 0008.
+Текущий head — `0011_deployment_runtime`; 0009/0010 также безопасно обновляют уже применённую 0008.
+После 0011 повторите идемпотентный DBA SQL: installer получает SELECT runtime/retirement tables
+и EXECUTE вложенного `core_module_authorized_4c`, но не deployment DML. Полный restricted
+bootstrap owner/migrator/runtime/installer/catalog owner проверяется в одной disposable DB
+тестом `test_module_db_privileges.py`, без изменения паролей существующего окружения.
 Сначала отделите owner/migrator/runtime согласно `runtime-database-roles.md`, затем создайте
 отдельную restricted LOGIN `core_installer` с секретом через ваш защищённый DBA workflow.
 Не используйте миграционный или Core runtime LOGIN для apply.

@@ -12,6 +12,9 @@ class ModuleBodyLimit:
         if scope["type"] != "http" or not scope["path"].startswith(
             (
                 "/api/v1/module-agent",
+                "/api/v1/deployment-agent",
+                "/api/v1/platform/deployment-",
+                "/api/v1/platform/runtime-",
                 "/api/v1/platform/module-",
                 "/api/v1/platform/package-publishers",
                 "/api/v1/platform/packages/",

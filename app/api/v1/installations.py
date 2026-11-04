@@ -1,5 +1,5 @@
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Request
 from sqlalchemy import func, select
@@ -51,6 +51,26 @@ async def create(payload: PlanCreate, request: Request, claims: Claims) -> dict[
 async def detail(plan_id: UUID, ctx: Ctx) -> dict[str, Any]:
     await require_platform(ctx, serialize=False)
     return service.plan_view(await service.plan(ctx, plan_id))
+
+
+@router.post("/module-install-plans/{plan_id}/refresh", status_code=201)
+async def refresh_plan(plan_id: UUID, request: Request, claims: Claims) -> dict[str, Any]:
+    # A NEW plan/nonce, full verification and fresh approval; never extend the old approval/MFA TTL.
+    async with transaction(request, claims) as ctx:
+        await require_platform(ctx, serialize=False)
+        old = await service.plan(ctx, plan_id)
+        current = await ctx.session.scalar(
+            select(ModuleInstallation).where(ModuleInstallation.module_id == old.module_id)
+        )
+        payload = PlanCreate.model_validate(
+            {
+                "action": old.action,
+                "package_id": old.package_id,
+                "expected_generation": current.generation if current else 0,
+                "idempotency_key": uuid4(),
+            }
+        )
+    return await create(payload, request, await live_claims(request))
 
 
 @router.post("/module-install-plans/{plan_id}/approve")

@@ -1,5 +1,10 @@
 # Module Manager — Sprint 4C
 
+Дополнение 4D: [runtime control plane](module-runtime.md) не меняет перечисленные ниже
+каталожные полномочия. Install plan и deployment plan различаются; только отдельный агент
+выполняет bounded OCI deployment. Новый plan refresh создаёт новый nonce/expiry и требует
+новой approval, а не продлевает старую. Retire не возвращает revoked trust.
+
 Module Manager — глобальный control plane внутри модульного монолита. Он не является
 контейнерным оркестратором, сервером лицензирования или исполнителем содержимого `.xpkg`.
 Registry/import, installation, platform availability, provisioning и реальное соединение

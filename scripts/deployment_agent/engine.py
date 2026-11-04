@@ -1,0 +1,442 @@
+"""Narrow Docker API adapter for ONE dedicated, pinned rootless daemon. No shell interface."""
+
+import json
+import os
+import stat
+import time
+from collections.abc import Callable, Iterator
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+from app.domains.deployments.contracts import PROFILES, Delivery, RuntimeReport
+
+
+class EngineFailure(Exception):
+    pass
+
+
+# Fixed private in-container mount, never a host temporary pathname.
+TMP_PATH = "/tmp"  # nosec B108
+ISOLATION_PROBE = """import json,os,pathlib
+s=dict(line.split(':',1) for line in pathlib.Path('/proc/self/status').read_text().splitlines() if ':' in line)
+p=pathlib.Path('/sys/fs/cgroup')
+print(json.dumps({'uid':os.getuid(),'caps':s['CapEff'].strip(),'nnp':s['NoNewPrivs'].strip(),'seccomp':s['Seccomp'].strip(),
+'memory':(p/'memory.max').read_text().strip(),'swap':(p/'memory.swap.max').read_text().strip(),'pids':(p/'pids.max').read_text().strip(),'cpu':(p/'cpu.max').read_text().strip()}))
+"""
+HEALTH_PROBE = """import http.client
+for path in ('live','ready'):
+ c=http.client.HTTPConnection('127.0.0.1',8080,timeout=2)
+ c.request('GET','/health/'+path)
+ r=c.getresponse()
+ assert r.status==200
+ r.read(4096)
+ c.close()
+"""
+
+
+class Engine:
+    def __init__(self, socket: Path, expected_id: str):
+        if (
+            not socket.is_absolute()
+            or socket.is_symlink()
+            or socket.resolve() != socket
+            or str(socket) in {"/var/run/docker.sock", "/run/docker.sock"}
+            or not stat.S_ISSOCK(socket.stat().st_mode)
+            or socket.stat().st_uid != os.geteuid()
+        ):
+            raise EngineFailure("engine_endpoint_denied")
+        self.client = httpx.Client(
+            transport=httpx.HTTPTransport(uds=str(socket)),
+            base_url="http://deployment-engine/v1.52",
+            timeout=120,
+            trust_env=False,
+            follow_redirects=False,
+        )
+        self.expected_id = expected_id
+
+    def close(self) -> None:
+        self.client.close()
+
+    def call(self, method: str, path: str, **kwargs: Any) -> Any:
+        try:
+            with self.client.stream(method, path, **kwargs) as response:
+                data = bytearray()
+                for chunk in response.iter_bytes(16384):
+                    if len(data) + len(chunk) > 524288:
+                        raise EngineFailure("engine_response_limit")
+                    data.extend(chunk)
+                if response.status_code == 404:
+                    return None
+                if response.status_code == 304 and path.endswith(("/start", "/stop")):
+                    return {}
+                if response.status_code == 409 and method == "DELETE" and path.startswith("/images/"):
+                    # Bounded cache GC must not remove an image still used by another installation.
+                    return {}
+                if not 200 <= response.status_code < 300:
+                    raise EngineFailure("engine_operation_failed")
+                # Exec output is Docker's bounded multiplexed stream, not arbitrary logs.
+                if path.endswith("/start") and "/exec/" in path:
+                    return bytes(data)
+                if not data:
+                    return {}
+                if path.startswith("/images/load"):
+                    for line in data.splitlines():
+                        value = json.loads(line)
+                        if "error" in value or "errorDetail" in value:
+                            raise EngineFailure("engine_image_load_failed")
+                    return {}
+                return json.loads(data)
+        except (httpx.HTTPError, ValueError, TypeError):
+            raise EngineFailure("engine_transport_or_protocol") from None
+
+    def identity(self, job: Delivery) -> dict[str, Any]:
+        info = self.call("GET", "/info")
+        if (
+            not isinstance(info, dict)
+            or info.get("ID") != self.expected_id
+            or job.engine_id != self.expected_id
+        ):
+            raise EngineFailure("engine_identity_mismatch")
+        if "name=rootless" not in info.get("SecurityOptions", []):
+            raise EngineFailure("rootless_engine_required")
+        return info
+
+    def available(self, job: Delivery) -> None:
+        info = self.identity(job)
+        rows = self.call("GET", "/containers/json", params={"all": "true"})
+        if (
+            not isinstance(rows, list)
+            or len(rows) > 128
+            or any(
+                row.get("Labels", {}).get("io.xarionix.deployment.host") != str(job.host_id) for row in rows
+            )
+        ):
+            raise EngineFailure("dedicated_engine_required")
+        if (
+            not any(s.startswith("name=seccomp") for s in info.get("SecurityOptions", []))
+            or str(info.get("CgroupVersion")) != "2"
+            or not all(info.get(k) is True for k in ("MemoryLimit", "SwapLimit", "PidsLimit", "CpuCfsQuota"))
+        ):
+            raise EngineFailure("isolation_unavailable")
+        raw_architecture = str(info.get("Architecture", ""))
+        architecture = {"x86_64": "amd64", "aarch64": "arm64"}.get(raw_architecture, raw_architecture)
+        if job.runtime.platform != "linux/" + str(architecture):
+            raise EngineFailure("engine_platform_mismatch")
+
+    def owned(self, job: Delivery) -> list[dict[str, Any]]:
+        self.identity(job)
+        filters = json.dumps(
+            {
+                "label": [
+                    "io.xarionix.deployment.host=" + str(job.host_id),
+                    "io.xarionix.deployment.installation=" + str(job.installation_id),
+                ]
+            },
+            separators=(",", ":"),
+        )
+        rows = self.call("GET", "/containers/json", params={"all": "true", "filters": filters})
+        if not isinstance(rows, list) or len(rows) > 4:
+            raise EngineFailure("runtime_inventory_invalid")
+        return rows
+
+    def inspect(self, identifier: str) -> dict[str, Any] | None:
+        value = self.call("GET", "/containers/" + identifier + "/json")
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise EngineFailure("runtime_inventory_invalid")
+        return value
+
+    def execute(self, identifier: str, source: str) -> bytes:
+        value = self.call(
+            "POST",
+            "/containers/" + identifier + "/exec",
+            json={
+                "AttachStdout": True,
+                "AttachStderr": True,
+                "Tty": False,
+                "User": "10001:10001",
+                "Privileged": False,
+                "Cmd": ["/usr/local/bin/python", "-I", "-c", source],
+            },
+        )
+        if not isinstance(value, dict) or not isinstance(value.get("Id"), str):
+            raise EngineFailure("health_probe_failed")
+        output = self.call(
+            "POST", "/exec/" + value["Id"] + "/start", json={"Detach": False, "Tty": False}, timeout=5
+        )
+        status = self.call("GET", "/exec/" + value["Id"] + "/json")
+        if (
+            not isinstance(output, bytes)
+            or not isinstance(status, dict)
+            or status.get("Running") is not False
+            or status.get("ExitCode") != 0
+        ):
+            raise EngineFailure("health_probe_failed")
+        result, offset = bytearray(), 0
+        while offset < len(output):
+            header = output[offset : offset + 8]
+            if len(header) != 8 or header[0] not in {1, 2}:
+                raise EngineFailure("health_probe_failed")
+            size = int.from_bytes(header[4:], "big")
+            if offset + 8 + size > len(output):
+                raise EngineFailure("health_probe_failed")
+            result.extend(output[offset + 8 : offset + 8 + size])
+            offset += 8 + size
+        return bytes(result)
+
+    def constraints(self, info: dict[str, Any], job: Delivery) -> None:
+        config, host = info.get("Config", {}), info.get("HostConfig", {})
+        limits = PROFILES[job.profile]
+        labels = config.get("Labels", {})
+        image = self.image(job)
+        if (
+            labels.get("io.xarionix.deployment.host") != str(job.host_id)
+            or labels.get("io.xarionix.deployment.installation") != str(job.installation_id)
+            or info.get("Image") != image["Id"]
+            or config.get("User") != "10001:10001"
+            or (config.get("Env") or []) != (image.get("Config", {}).get("Env") or [])
+            or host.get("NetworkMode") != "none"
+            or host.get("Privileged") is not False
+            or host.get("ReadonlyRootfs") is not True
+            or set(host.get("CapDrop", [])) != {"ALL"}
+            or host.get("CapAdd")
+            or set(host.get("SecurityOpt", [])) != {"no-new-privileges"}
+            or host.get("CgroupnsMode") != "private"
+            or host.get("Binds")
+            or host.get("Mounts")
+            or info.get("Mounts")
+            or host.get("Devices")
+            or host.get("DeviceRequests")
+            or host.get("PortBindings")
+            or host.get("PidMode")
+            or host.get("IpcMode") not in {"private", "none"}
+            or host.get("Memory") != limits["memory"]
+            or host.get("MemorySwap") != limits["memory"]
+            or host.get("PidsLimit") != limits["pids"]
+            or host.get("CpuQuota") != limits["cpu_quota"]
+            or host.get("CpuPeriod") != 100000
+            or host.get("Tmpfs") != {TMP_PATH: f"rw,noexec,nosuid,nodev,size={limits['tmpfs']}"}
+        ):
+            raise EngineFailure("isolation_unavailable")
+        if info.get("State", {}).get("Running"):
+            measured = json.loads(self.execute(info["Id"], ISOLATION_PROBE))
+            if (
+                measured.get("uid") != 10001
+                or int(measured.get("caps", "1"), 16) != 0
+                or measured.get("nnp") != "1"
+                or measured.get("seccomp") != "2"
+                or measured.get("memory") != str(limits["memory"])
+                or measured.get("swap") != "0"
+                or measured.get("pids") != str(limits["pids"])
+                or measured.get("cpu") != f"{limits['cpu_quota']} 100000"
+            ):
+                raise EngineFailure("isolation_unavailable")
+
+    def load(self, path: Path, job: Delivery) -> None:
+        def chunks() -> Iterator[bytes]:
+            with path.open("rb") as stream:
+                while chunk := stream.read(65536):
+                    yield chunk
+
+        self.call(
+            "POST", "/images/load?quiet=true", content=chunks(), headers={"Content-Type": "application/x-tar"}
+        )
+        self.image(job)
+
+    def image(self, job: Delivery) -> dict[str, Any]:
+        # Docker's containerd store identifies an imported OCI image by manifest
+        # digest; the classic graphdriver uses config digest. Both are bound by
+        # the signed OCI inventory. Never resolve by a mutable tag or image name.
+        image = self.call("GET", "/images/" + job.runtime.image_digest + "/json")
+        if image is None:
+            image = self.call("GET", "/images/" + job.runtime.config_digest + "/json")
+        if (
+            not isinstance(image, dict)
+            or image.get("Id") not in {job.runtime.config_digest, job.runtime.image_digest}
+            or (
+                image.get("Id") == job.runtime.image_digest
+                and image.get("Descriptor", {}).get("digest") != job.runtime.image_digest
+            )
+            or (image.get("Descriptor") and image["Descriptor"].get("digest") != job.runtime.image_digest)
+            or str(image.get("Os")) + "/" + str(image.get("Architecture")) != job.runtime.platform
+            or image.get("Config", {}).get("Volumes")
+            or image.get("Config", {}).get("OnBuild")
+        ):
+            raise EngineFailure("image_identity_mismatch")
+        return image
+
+    def create(self, job: Delivery) -> str:
+        limits = PROFILES[job.profile]
+        name = (
+            "xarionix-"
+            + job.host_id.hex[:8]
+            + "-"
+            + job.installation_id.hex
+            + "-"
+            + job.runtime.config_digest[7:19]
+        )
+        value = self.call(
+            "POST",
+            "/containers/create",
+            params={"name": name},
+            json={
+                "Image": self.image(job)["Id"],
+                "User": "10001:10001",
+                "Env": [],
+                "WorkingDir": "/app",
+                "Labels": {
+                    "io.xarionix.deployment.host": str(job.host_id),
+                    "io.xarionix.deployment.installation": str(job.installation_id),
+                    "io.xarionix.deployment.image": job.runtime.image_digest,
+                },
+                "HostConfig": {
+                    "NetworkMode": "none",
+                    "ReadonlyRootfs": True,
+                    "Privileged": False,
+                    "CapDrop": ["ALL"],
+                    "SecurityOpt": ["no-new-privileges"],
+                    "CgroupnsMode": "private",
+                    "IpcMode": "none",
+                    "Memory": limits["memory"],
+                    "MemorySwap": limits["memory"],
+                    "PidsLimit": limits["pids"],
+                    "CpuPeriod": 100000,
+                    "CpuQuota": limits["cpu_quota"],
+                    # Fixed private in-container tmpfs, not a host temporary pathname.
+                    "Tmpfs": {TMP_PATH: f"rw,noexec,nosuid,nodev,size={limits['tmpfs']}"},
+                    "RestartPolicy": {"Name": "on-failure", "MaximumRetryCount": 3},
+                    "LogConfig": {"Type": "local", "Config": {"max-size": "1m", "max-file": "2"}},
+                },
+            },
+        )
+        if not isinstance(value, dict) or not isinstance(value.get("Id"), str):
+            raise EngineFailure("runtime_create_failed")
+        return str(value["Id"])
+
+    def stop(self, identifier: str) -> None:
+        self.call("POST", "/containers/" + identifier + "/stop", params={"t": "10"})
+
+    def trim_stopped(self, job: Delivery, active_id: str) -> None:
+        # V1 has no persistent mounts. Retain active + one previous stopped
+        # runtime; older rollback is re-imported from the signed CAS. Never prune
+        # globally, force-remove images, or delete user volumes.
+        rows = sorted(
+            (r for r in self.owned(job) if r["Id"] != active_id),
+            key=lambda r: (r.get("Created", 0), r["Id"]),
+            reverse=True,
+        )
+        for row in rows[1:]:
+            info = self.inspect(row["Id"])
+            if info is None or info.get("State", {}).get("Running"):
+                raise EngineFailure("runtime_inventory_invalid")
+            self.call("DELETE", "/containers/" + row["Id"], params={"v": "false", "force": "false"})
+            self.call("DELETE", "/images/" + info["Image"], params={"force": "false", "noprune": "true"})
+
+    def report(self, job: Delivery) -> RuntimeReport:
+        rows = self.owned(job)
+        matching = [
+            r
+            for r in rows
+            if r.get("Labels", {}).get("io.xarionix.deployment.image") == job.runtime.image_digest
+        ]
+        report = RuntimeReport(
+            installation_id=job.installation_id,
+            generation=job.generation,
+            image_digest=job.runtime.image_digest,
+            state="not_provisioned",
+            health="unknown",
+        )
+        if not matching:
+            return report
+        info = self.inspect(matching[0]["Id"])
+        if info is None:
+            return report
+        self.constraints(info, job)
+        running = info.get("State", {}).get("Running") is True
+        healthy = False
+        if running:
+            try:
+                self.execute(info["Id"], HEALTH_PROBE)
+                healthy = True
+            except EngineFailure:
+                pass
+        return report.model_copy(
+            update={
+                "container_id": info["Id"],
+                "state": "running" if running else "stopped",
+                "health": "healthy" if healthy else "unhealthy" if running else "unknown",
+                "live": healthy,
+                "ready": healthy,
+                "restart_count": info.get("RestartCount", 0),
+            }
+        )
+
+    def apply(
+        self, job: Delivery, authorize: Callable[[], None], archive: Path | None = None
+    ) -> RuntimeReport:
+        # Stops/quarantine remain possible even after trust, cgroup support or health is lost.
+        rows = self.owned(job)
+        if job.operation == "inspect":
+            authorize()
+            return self.report(job)
+        if job.operation in {"stop", "quarantine", "retire", "deprovision"}:
+            authorize()
+            for row in rows:
+                self.stop(row["Id"])
+                if job.operation == "deprovision":
+                    self.call("DELETE", "/containers/" + row["Id"], params={"v": "false", "force": "false"})
+            return RuntimeReport(
+                installation_id=job.installation_id,
+                generation=job.generation,
+                image_digest=job.runtime.image_digest,
+                state="not_provisioned" if job.operation == "deprovision" else "stopped",
+                health="unknown",
+            )
+        self.available(job)
+        if archive:
+            self.load(archive, job)
+        authorize()
+        matches = [
+            r
+            for r in rows
+            if r.get("Labels", {}).get("io.xarionix.deployment.image") == job.runtime.image_digest
+        ]
+        if job.operation == "restart" and not matches:
+            raise EngineFailure("runtime_missing")
+        identifier = matches[0]["Id"] if matches else self.create(job)
+        info = self.inspect(identifier)
+        if info is None:
+            raise EngineFailure("runtime_missing")
+        self.constraints(info, job)
+        if job.operation != "provision":
+            if job.operation == "restart":
+                self.stop(identifier)
+            for row in rows:
+                if row["Id"] != identifier:
+                    self.stop(row["Id"])
+            authorize()
+            healthy = False
+            try:
+                self.call("POST", "/containers/" + identifier + "/start")
+                deadline = time.monotonic() + 30
+                while True:
+                    report = self.report(job)
+                    if report.health == "healthy":
+                        self.trim_stopped(job, identifier)
+                        healthy = True
+                        return report
+                    if time.monotonic() >= deadline:
+                        raise EngineFailure("health_failed")
+                    time.sleep(0.25)
+            finally:
+                # Post-start cgroup/health verification failure must not leave an
+                # unacknowledged or insufficiently isolated process running.
+                if not healthy:
+                    try:
+                        self.stop(identifier)
+                    except EngineFailure:
+                        pass
+        return self.report(job)

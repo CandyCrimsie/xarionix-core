@@ -47,12 +47,13 @@ GRANT SELECT ON users,identities,platform_admins,permission_namespaces,permissio
   package_publishers,publisher_signing_keys,publisher_namespace_grants,module_packages,
   module_installations,module_dependency_pins,module_install_plans,module_install_operations,
   module_installation_history,module_instance_bindings,module_services,module_instances TO xarionix_module_executor;
+GRANT SELECT ON deployment_hosts,runtime_deployments,deployment_jobs,module_retirements TO xarionix_module_executor;
 GRANT INSERT,UPDATE ON module_installations,module_install_operations,module_installation_history,module_dependency_pins TO xarionix_module_executor;
 GRANT DELETE ON module_dependency_pins TO xarionix_module_executor;
 GRANT UPDATE ON module_install_plans,module_instance_bindings TO xarionix_module_executor;
 GRANT INSERT ON audit_events TO xarionix_module_executor;
 -- SQLAlchemy retrieves the server-generated timestamp, not audit payloads.
 GRANT SELECT(created_at) ON audit_events TO xarionix_module_executor;
-GRANT EXECUTE ON FUNCTION core_lock(text,text,boolean),core_module_available(text,integer),core_module_authorized(uuid,integer) TO xarionix_module_executor;
+GRANT EXECUTE ON FUNCTION core_lock(text,text,boolean),core_module_available(text,integer),core_module_authorized(uuid,integer),core_module_authorized_4c(uuid,integer) TO xarionix_module_executor;
 GRANT xarionix_module_executor TO :"installer_role" WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
 COMMIT;

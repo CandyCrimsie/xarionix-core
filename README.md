@@ -1,5 +1,15 @@
 # Xarionix Core
 
+Sprint 4D добавляет [изолированный OCI runtime](docs/module-runtime.md), отдельный
+[Deployment Agent](docs/deployment-agent.md), signed offline artifacts, approved lifecycle,
+health/generation gates и safe retirement. Core не получает Docker socket и не выполняет код.
+Профиль V1 — offline, без пользовательских persistent mounts и public ports; полноценный
+ERP/Billing deployment этим не объявляется. [Development](docs/module-runtime-development.md),
+[security](docs/module-runtime-security.md), [проверки и ограничения](docs/sprint-4d-validation.md).
+
+Ниже сохранён контекст Sprint 4C; ограничение «standard runtime не развёртывается» относится
+к 4C. В 4D поддержан только явно описанный bounded OCI profile, не произвольные backend artifacts.
+
 Sprint 4C: глобальные module installations, immutable install plans/MFA approval,
 отдельный trusted operator executor, exact dependency pins, permission epochs,
 explicit autonomous instance binding и transactional recovery. Пакеты **не исполняются**,

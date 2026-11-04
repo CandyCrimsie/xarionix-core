@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "module": {"id":"hello-runtime", "name":"Пример HTTP runtime", "version":"1.0.0", "type":"standard"},
+  "publisher":{"id":"example-runtime"},
+  "compatibility":{"core":">=0.1.0 <1.0.0", "module_protocol":1},
+  "permissions":{"namespace":"hello", "definitions":[{"key":"hello.objects.read", "description":"Чтение объектов примера", "scope":"company"}]},
+  "dependencies":[],
+  "artifacts":[]
+}

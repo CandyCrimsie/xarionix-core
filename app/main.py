@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
+from app.api.v1.deployments import router as deployments_router
 from app.api.v1.installations import router as installations_router
 from app.api.v1.modules import router as modules_router
 from app.api.v1.packages import router as packages_router
@@ -154,4 +155,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(modules_router)
     app.include_router(packages_router)
     app.include_router(installations_router)
+    app.include_router(deployments_router)
     return app

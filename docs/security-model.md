@@ -1,5 +1,11 @@
 # Модель безопасности
 
+4D: [runtime isolation](module-runtime-security.md), [artifact binding](module-runtime-artifacts.md),
+[recovery/revocation](module-runtime-recovery.md). Deployment JWT имеет отдельную audience и
+principal, не создаёт User/Membership/ModuleService. Он не подходит human/business API.
+Core не получает engine socket; module runtime не получает никаких Core/agent/DB credentials.
+Health alone не даёт backend permission: required current trust + exact package/job/generation.
+
 Sprint 4C: [installation threat boundary](module-installation-security.md),
 [отдельная DB capability исполнителя](module-installation-executor.md). Обычный HTTP role не
 получает EXECUTE catalog function или catalog DML. Legacy dev table owner сохраняет DDL-риск;

@@ -9,7 +9,7 @@ COPY app ./app
 COPY scripts ./scripts
 RUN /opt/venv/bin/pip install --no-deps . && /opt/venv/bin/python -m pip uninstall --yes pip
 
-FROM ${PYTHON_IMAGE} AS runtime
+FROM ${PYTHON_IMAGE} AS base-runtime
 ARG VERSION=0.1.0
 ARG VCS_REF=unknown
 ARG SOURCE_URL=unknown
@@ -35,3 +35,16 @@ COPY --chown=10001:10001 alembic.ini ./
 USER 10001:10001
 EXPOSE 8000
 CMD ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--no-access-log", "--no-server-header", "--no-proxy-headers"]
+
+# Separate service target. No Core/installer DB configuration is supplied to this image.
+FROM base-runtime AS deployment-agent
+USER 0:0
+RUN addgroup -S -g 1000 deployment && adduser -S -D -H -u 1000 -G deployment deployment \
+    && mkdir -p /var/lib/xarionix/deployment \
+    && chown 1000:1000 /var/lib/xarionix/deployment && chmod 700 /var/lib/xarionix/deployment
+LABEL org.opencontainers.image.title="Xarionix Deployment Agent"
+USER 1000:1000
+CMD ["python", "-m", "scripts.deployment_agent"]
+
+# Preserve the default production build as Core, not the Deployment Agent target.
+FROM base-runtime AS runtime

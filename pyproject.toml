@@ -23,7 +23,7 @@ packages = ["app", "scripts"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-markers = ["integration: requires real PostgreSQL / managed Keycloak"]
+markers = ["integration: requires real PostgreSQL / managed Keycloak", "runtime: requires a dedicated native rootless Linux engine with delegated resource controls"]
 
 [tool.ruff]
 target-version = "py312"

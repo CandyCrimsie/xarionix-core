@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     public_url: str
     oidc_issuer: str = Field(max_length=512)
     oidc_audience: str = Field(default="xarionix-core", min_length=1, max_length=120)
+    deployment_audience: str = Field(default="xarionix-core-deployment", min_length=1, max_length=120)
     modules_audience: str = Field(
         default="xarionix-core-modules", min_length=1, max_length=120, pattern=r"^[A-Za-z0-9._:-]+$"
     )
@@ -78,7 +79,7 @@ class Settings(BaseSettings):
         development = self.environment == "development"
         if not self.packages_storage_root.is_absolute() or ".." in self.packages_storage_root.parts:
             raise ValueError("Package storage must be an absolute operator-configured path")
-        if self.modules_audience == self.oidc_audience:
+        if len({self.modules_audience, self.oidc_audience, self.deployment_audience}) != 3:
             raise ValueError("Machine and human audiences must differ")
         if self.modules_stale_seconds < self.modules_check_in_seconds * 2:
             raise ValueError("Stale threshold must allow at least two check-ins")

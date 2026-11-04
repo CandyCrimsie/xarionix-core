@@ -1,5 +1,12 @@
 # Runtime / migrator: поддерживаемая maintenance-граница
 
+После additive 0011 DBA явно выдаёт HTTP runtime SELECT/INSERT/UPDATE на deployment_hosts,
+deployment_plans,runtime_deployments,deployment_jobs,module_retirements (без DELETE/TRUNCATE),
+и EXECUTE `core_module_authorized_4c(uuid,integer)` для вложенного availability predicate.
+Сначала повторите `module-executor.sql` после миграции, затем negative checks/readiness.
+Installer не получает deployment DML, Core не получает installer secret. Автоматического
+bootstrap существующей DB нет. [Runtime architecture](module-runtime.md).
+
 Sprint 4C вводит третью, **отдельную** restricted installer LOGIN и две NOLOGIN capability роли.
 [Точная процедура](module-installation-executor.md), SQL `deploy/postgres/module-executor.sql`.
 Не выдавайте HTTP runtime `EXECUTE ON ALL FUNCTIONS`: обязательно исключить

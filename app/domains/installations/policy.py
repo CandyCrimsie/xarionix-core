@@ -33,6 +33,8 @@ def policy(config: Settings) -> dict[str, Any]:
 def runtime_mode(manifest: Manifest) -> str:
     if manifest.module.type == "autonomous":
         return "external_agent"
+    if any(a.path == "payload/resources/runtime-v1.json" for a in manifest.artifacts):
+        return "oci_v1"
     return (
         "metadata_only"
         if all(a.path.startswith("payload/resources/") for a in manifest.artifacts)

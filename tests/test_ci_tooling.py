@@ -287,6 +287,24 @@ def test_gitlab_pipeline_has_mandatory_gates_and_no_deployment():
     assert docker_job["variables"]["FF_NETWORK_PER_BUILD"] == "1"
 
 
+def test_native_runtime_ci_is_a_required_separate_serialized_real_engine_gate():
+    config = validate.load_yaml(ROOT / ".gitlab-ci.yml")
+    native = config["integration:runtime-e2e"]
+    managed = config["integration:managed-stack"]
+    assert native["stage"] == managed["stage"] == "integration"
+    assert native["tags"] == ["runtime-rootless"]
+    assert native["rules"] == managed["rules"]
+    assert native["needs"] == [{"job": "integration:managed-stack", "artifacts": False}]
+    assert native["variables"]["XARIONIX_RUN_RUNTIME_TESTS"] == "1"
+    assert native["variables"]["XARIONIX_RUN_DOCKER_TESTS"] == "1"
+    assert "tests/integration/test_runtime_e2e.py" in " ".join(native["script"])
+    assert "XARIONIX_RUNTIME_ENGINE_SOCKET" in native["script"][0]
+    assert not native.get("allow_failure")
+    assert not native.get("services")  # A second nested DinD cannot prove native limits.
+    assert "extends" not in native  # No implicit Docker executor/socket configuration.
+    assert native["artifacts"]["reports"]["junit"] == "reports/runtime-e2e.xml"
+
+
 @pytest.mark.parametrize("lockfile", ["requirements.lock", "requirements-dev.lock"])
 def test_dependency_audits_use_explicit_socket_timeout_without_weakening_security(lockfile):
     config = validate.load_yaml(ROOT / ".gitlab-ci.yml")

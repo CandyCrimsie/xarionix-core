@@ -143,6 +143,47 @@ security:image-candidate:
     expire_in: 7 days
     paths: [reports/trivy-image.json]
 
+security:runtime-images:
+  extends: .docker
+  stage: security
+  rules: *full_rules
+  timeout: 30 minutes
+  script:
+    - python3 -u -m scripts.docker_job run runtime-images
+  artifacts:
+    when: always
+    expire_in: 7 days
+    paths: [reports/trivy-agent.json, reports/trivy-runtime.json]
+
+# Native Linux shell executor, dedicated unprivileged account, TWO separate
+# rootless daemons. Never bind a VM/system Docker socket into a Docker job.
+# Missing runner/delegation is a visible pending/failed gate, not an allowed failure.
+integration:runtime-e2e:
+  stage: integration
+  tags: [runtime-rootless]
+  rules: *full_rules
+  # The dedicated account currently shares a small test VM with the existing
+  # Docker runner. Finish its full stack first, without changing either runner.
+  needs:
+    - job: integration:managed-stack
+      artifacts: false
+  timeout: 30 minutes
+  variables:
+    XARIONIX_RUN_DOCKER_TESTS: "1"
+    XARIONIX_RUN_RUNTIME_TESTS: "1"
+  script:
+    - test -n "$XARIONIX_RUNTIME_ENGINE_SOCKET" || { echo "Configure the dedicated native rootless runtime socket on this runner"; exit 1; }
+    - python3 -m venv .venv
+    - .venv/bin/python -m pip install -r requirements-dev.lock
+    - .venv/bin/python -m pip install --no-deps -e .
+    - .venv/bin/python -m pytest tests/integration/test_runtime_e2e.py -vv -s --junitxml=reports/runtime-e2e.xml
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths: [reports/runtime-e2e.xml, reports/runtime-benchmark.json]
+    reports:
+      junit: reports/runtime-e2e.xml
+
 build:production:
   extends: .docker
   stage: build

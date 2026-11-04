@@ -8,6 +8,7 @@ from uuid import UUID
 from sqlalchemy import select, text
 
 from app.core.access import Context, audit, fail, require_platform
+from app.domains.deployments.model import DeploymentHost, DeploymentJob, ModuleRetirement, RuntimeDeployment
 from app.domains.installations.model import (
     ModuleDependencyPin,
     ModuleInstallation,
@@ -89,6 +90,7 @@ async def runtime(
     manifest: Manifest,
     *,
     facts: tuple[ModuleInstanceBinding | None, ModuleInstance | None, ModuleService | None] | None = None,
+    deployment_facts: dict[UUID, tuple[RuntimeDeployment, DeploymentHost, str | None]] | None = None,
 ) -> dict[str, Any]:
     binding = (
         facts[0]
@@ -105,6 +107,55 @@ async def runtime(
         "agent_version": None,
         "protocol_version": None,
     }
+    if result["mode"] == "oci_v1":
+        if deployment_facts is None:
+            row = (
+                await ctx.session.execute(
+                    select(RuntimeDeployment, DeploymentHost, DeploymentJob.state)
+                    .join(DeploymentHost, RuntimeDeployment.host_id == DeploymentHost.id)
+                    .outerjoin(
+                        DeploymentJob,
+                        (DeploymentJob.installation_id == RuntimeDeployment.installation_id)
+                        & (DeploymentJob.generation == RuntimeDeployment.generation),
+                    )
+                    .where(RuntimeDeployment.installation_id == value.id)
+                )
+            ).first()
+            pair = (row[0], row[1], row[2]) if row else None
+        else:
+            pair = deployment_facts.get(value.id)
+        if pair:
+            deployed, host, job_state = pair
+            fresh = now(ctx) - timedelta(seconds=ctx.config.modules_stale_seconds)
+            ready = bool(
+                host.status == "active"
+                and job_state == "succeeded"
+                and deployed.container_id is not None
+                and host.last_seen
+                and host.last_seen > fresh
+                and deployed.package_id == value.package_id
+                and deployed.desired == "running"
+                and deployed.observed == "running"
+                and deployed.health == "healthy"
+                and deployed.observed_generation == deployed.generation
+                and deployed.observed_image_digest == deployed.image_digest
+                and deployed.last_ready
+                and deployed.last_ready > fresh
+                and deployed.last_seen
+                and deployed.last_seen > fresh
+            )
+            result.update(
+                {
+                    "state": "healthy" if ready else deployed.observed,
+                    "binding_revision": deployed.generation,
+                    "binding_active": ready,
+                    "last_heartbeat": deployed.last_seen,
+                    "deployment_host_id": str(host.id),
+                    "image_digest": deployed.image_digest,
+                    "desired": deployed.desired,
+                }
+            )
+        return result
     if manifest.module.type != "autonomous":
         return result
     result["state"] = "awaiting_connection"
@@ -154,6 +205,12 @@ async def snapshot(
         .where(ModuleInstallation.module_id == target.module_id)
         .execution_options(populate_existing=True)
     )
+    if (
+        current
+        and action in {"install", "enable", "update", "rollback"}
+        and await ctx.session.get(ModuleRetirement, current.id) is not None
+    ):
+        fail(409, "installation_retired")
     if (current.generation if current else 0) != expected:
         fail(409, "installation_generation_conflict")
     try:
@@ -301,6 +358,8 @@ async def snapshot(
         }
     )
     if action == "enable":
+        if runtime_info["mode"] == "oci_v1" and not runtime_info["binding_active"]:
+            blockers.append("runtime_not_healthy")
         if runtime_info["mode"] == "not_supported_in_4c":
             blockers.append("runtime_not_supported_in_4c")
         if runtime_info["mode"] == "external_agent" and (
@@ -371,7 +430,9 @@ async def snapshot(
             "binding_revision": runtime_info["binding_revision"],
             "binding_active": runtime_info["binding_active"],
         },
-        "runtime_provisioning": "not_supported_in_4c",
+        "runtime_provisioning": "separate_approved_deployment"
+        if runtime_info["mode"] == "oci_v1"
+        else "not_supported_in_4c",
         "blockers": sorted(blockers),
         "ready": not blockers,
         "warnings": [
@@ -613,6 +674,25 @@ async def views(ctx: Context, values: Sequence[ModuleInstallation]) -> list[dict
         ).all()
     }
     store = await trust_store(ctx)
+    deployment_facts = (
+        {
+            r.installation_id: (r, h, job_state)
+            for r, h, job_state in (
+                await ctx.session.execute(
+                    select(RuntimeDeployment, DeploymentHost, DeploymentJob.state)
+                    .join(DeploymentHost, RuntimeDeployment.host_id == DeploymentHost.id)
+                    .outerjoin(
+                        DeploymentJob,
+                        (DeploymentJob.installation_id == RuntimeDeployment.installation_id)
+                        & (DeploymentJob.generation == RuntimeDeployment.generation),
+                    )
+                    .where(RuntimeDeployment.installation_id.in_([v.id for v in values]))
+                )
+            ).all()
+        }
+        if any(runtime_mode(Manifest.model_validate(p.manifest)) == "oci_v1" for p in packages.values())
+        else {}
+    )
     result = []
     for value in values:
         pkg = packages.get(value.package_id)
@@ -646,7 +726,9 @@ async def views(ctx: Context, values: Sequence[ModuleInstallation]) -> list[dict
                 "created_at": value.created_at,
                 "updated_at": value.updated_at,
                 "current_trust": trusted_now,
-                "runtime": await runtime(ctx, value, manifest, facts=(binding, agent, machine)),
+                "runtime": await runtime(
+                    ctx, value, manifest, facts=(binding, agent, machine), deployment_facts=deployment_facts
+                ),
             }
         )
     return result

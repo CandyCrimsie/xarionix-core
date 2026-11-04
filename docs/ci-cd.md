@@ -1,5 +1,76 @@
 # GitLab CI/CD и проверки Docker — Sprint 1.1
 
+## Runtime gates Sprint 4D
+
+Существующий rootless DinD/TLS wrapper сохранён: controller completion проверяется через
+`docker wait` **и** inspect, не через exit streaming logs. Core build остаётся default target.
+`security:runtime-images` отдельно собирает/smoke-проверяет Agent и Hello, сканирует оба
+Trivy HIGH/CRITICAL, сохраняет отдельные JSON; Python gates охватывают новый код.
+
+`integration:runtime-e2e` — обязательный для full pipeline native Linux **shell runner**
+с tag `runtime-rootless`. Нужны Python 3.13+venv, Git, Docker/Compose и два отдельных rootless
+daemon: DOCKER_HOST для disposable Core stack, `XARIONIX_RUNTIME_ENGINE_SOCKET` для пустого
+runtime daemon с native cgroup v2 delegation. Engine IDs обязаны различаться. Один job на
+runner (concurrent=1); отдельный unprivileged account только для доверенного проекта.
+Не запускайте недоверенные fork MR на таком host и не давайте ему production secrets.
+Нет privileged job, rootful socket mount или автоматической установки runner из pipeline.
+
+Без соответствующего runner job останется pending; без socket/delegation — failed с причиной.
+Это намеренно не `allow_failure` и не successful skip. Старый DinD job проверяет control
+protocol, но физически не может доказать отсутствующие cgroup limits. Runner регистрацию/
+теги/политику protected MR на GitLab администратор настраивает отдельно. Локальные тесты не
+означают успешный GitLab pipeline; publish по-прежнему только protected release после gates.
+
+### Отдельный native runtime runner
+
+04.11.2026 с отдельного согласия владельца на тестовой VM добавлены **новые**, не заменяющие
+существующий Docker Runner, project runner №5 и service `xarionix-runtime-runner.service`.
+Регистрация locked к `xarionix-core`, tag только `runtime-rootless`, untagged jobs отключены,
+concurrent/limit/request_concurrency = 1. Версия отдельного бинарного Runner — 19.5.0;
+официальный binary сверялся с `release.sha256`. Authentication token вводился скрыто,
+хранится только в приватном runner config 0600, не в репозитории/argv/CI variables/artifacts.
+Не копируйте этот config в issue или отчёты.
+
+Системная учётная запись `xarionix-runtime-ci` (UID 1001) имеет locked password, приватный
+home 0700, не входит в sudo/docker и не имеет доступа к rootful socket. Два user-services:
+
+| Назначение | Service | Socket |
+|---|---|---|
+| Только модули E2E | `docker.service` | `/run/user/1001/docker.sock` |
+| Disposable Core/PG/Keycloak test stack | `docker-ci-stack.service` | `/run/user/1001/docker-ci-stack.sock` |
+
+Их Engine IDs различаются; проверены rootless/seccomp/cgroup v2 и CPU/RAM/swap/PID flags.
+User linger включён явно. `DOCKER_HOST`, `XARIONIX_RUNTIME_ENGINE_SOCKET`, `XDG_RUNTIME_DIR`
+и private `TMPDIR` заданы в новой регистрации/service, не как общие project variables.
+Runner service запускается без root, с NoNewPrivileges, RestrictSUIDSGID, PrivateTmp,
+ProtectSystem/ProtectHome и записью только в собственный home. Существующий rootful Docker,
+старые Runner registrations/config и чужие контейнеры/volumes не менялись.
+
+Для своего второго rootless daemon нужны полный PATH с `/usr/sbin` (иначе не находится
+`sysctl`) и `NotifyAccess=all` при `Type=notify`. Это настройки нового user-service,
+не глобальные ослабления systemd или Docker. При регистрации через `sudo -u` сначала
+переходите в home новой учётной записи: Runner 19.5 может завершиться на чтении недоступного
+cwd до обработки аргументов. CLI token environment — `CI_SERVER_TOKEN`; boolean CLI flags
+передаются как `--clean-git-config=true`, не двумя аргументами.
+
+Администрирование: `systemctl status|restart xarionix-runtime-runner.service`;
+user Docker services проверяются от **этой** учётной записи с соответствующими XDG/DBus.
+Не перезапускайте старый Runner для изменения нового. Shell executor запускает доверенный
+код checkout с правами своего пользователя, включая доступ к его runner config: это не
+граница против злонамеренного maintainer/MR. Не включайте для fork/untrusted проектов,
+не добавляйте production secrets и не увеличивайте concurrency без повторного аудита.
+VM всё ещё общая со старым Runner: kernel/resource exhaustion остаются общим риском.
+`integration:runtime-e2e` имеет same-stage needs на `integration:managed-stack`, без загрузки
+его artifacts: два полных стека не запускаются одновременно на этой небольшой VM. Старый
+Runner/service не перенастраивается; последующие security/build gates остаются обязательными.
+Практический ориентир для dedicated CI host — 8 GiB RAM и 40+ GiB disk; имеющаяся тестовая
+VM меньше. Рост build cache требует scoped обслуживания только этих test engines;
+global prune и удаление рабочих volumes не допускаются.
+
+Регистрация online не означает, что pipeline нового checkout прошёл. Изменения 4D остаются
+незакоммиченными: после отдельного разрешения на commit/push потребуется реальный pipeline
+нового SHA, а не Retry старого job.
+
 ## Pipeline
 
 Основной файл — `.gitlab-ci.yml`. Код не зависит от имени git remote или места клонирования (GitHub/GitLab). URL registry, project и credentials берутся только из стандартных GitLab variables. Автоматического production deployment нет.

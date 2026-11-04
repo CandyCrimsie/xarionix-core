@@ -1,4 +1,10 @@
-# Архитектура Core — Sprint 4C
+# Архитектура Core — Sprint 4D
+
+4D: [Core / Agent / Runtime](module-runtime.md), [security boundaries](module-runtime-security.md).
+`app/domains/deployments` — control-plane models/contracts, `scripts/deployment_agent` —
+отдельный engine adapter/process. Core не импортирует adapter. `0011_deployment_runtime`
+additive; прежние revisions/данные/4A protocol сохранены. Ниже — по-прежнему действующая
+4C catalog/installer граница; runtime execution вынесен за неё.
 
 Sprint 4C добавляет global module control plane, не runtime orchestrator. HTTP готовит immutable
 plans/approval; отдельный operator с отдельной SQL identity повторно проверяет bytes/trust и

@@ -2,6 +2,13 @@ def load_models() -> None:
     # Explicit imports: shared metadata only, never create_all or dynamic module loading.
     from app.domains.audit.model import AuditEvent  # noqa: F401
     from app.domains.companies.model import Company, CompanyRequest  # noqa: F401
+    from app.domains.deployments.model import (  # noqa: F401
+        DeploymentHost,
+        DeploymentJob,
+        DeploymentPlan,
+        ModuleRetirement,
+        RuntimeDeployment,
+    )
     from app.domains.employees.model import Employee  # noqa: F401
     from app.domains.identity.model import Identity  # noqa: F401
     from app.domains.installations.model import (  # noqa: F401

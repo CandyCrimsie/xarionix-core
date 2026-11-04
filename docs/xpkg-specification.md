@@ -1,5 +1,10 @@
 # `.xpkg` V1 — нормативный формат
 
+4D определяет [bounded OCI runtime profile V1](module-runtime-artifacts.md) внутри прежних
+artifact roles/подписанного inventory. Manifest/signature format и лимиты V1 не изменены.
+Valid inert XPKG не обязательно является допустимым runtime: OCI проверяется дополнительно,
+а запуск требует separate approved deployment. Произвольных flags/URLs в contract нет.
+
 Пакет — инертная подписанная дистрибуция, **не установка и не разрешение выполнять код**.
 Core product version берётся из wheel/editable metadata `pyproject.toml` через `app.version.VERSION`;
 API/OpenAPI и build tooling используют ту же версию. Номер продукта не повышен: 0.1.0.

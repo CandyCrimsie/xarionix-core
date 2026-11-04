@@ -244,7 +244,7 @@ async def test_split_owner_migrator_runtime_real_upgrade_and_api_mutations(stack
             )
         )
         assert operator.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0010_instance_enrollment",
+            "0011_deployment_runtime",
         )
         assert operator.execute("SELECT id FROM memberships WHERE company_id=%s", (cid,)).fetchone() == (
             membership,
@@ -252,6 +252,47 @@ async def test_split_owner_migrator_runtime_real_upgrade_and_api_mutations(stack
     connection = dict(
         host="localhost", port=stack["postgres_port"], dbname=database, user=runtime, password=runtime_secret
     )
+    # Full 4C/4D DBA bootstrap in this SAME restricted database, not the permissive
+    # dev schema: owner, migrator, HTTP runtime, installer, fixed catalog owner.
+    installer_name, installer_secret = "installer_" + suffix, secrets.token_hex(32)
+    with psycopg.connect(**(bootstrap | {"dbname": database})) as operator:
+        operator.execute(
+            sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
+                sql.Identifier(installer_name), sql.Literal(installer_secret)
+            )
+        )
+        operator.execute(
+            sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+                sql.Identifier(database), sql.Identifier(installer_name)
+            )
+        )
+        source = "\n".join(
+            line
+            for line in (managed.ROOT / "deploy/postgres/module-executor.sql").read_text().splitlines()
+            if not line.startswith("\\")
+        )
+        for variable, value in (("runtime_role", runtime), ("installer_role", installer_name)):
+            source = source.replace(':"' + variable + '"', sql.Identifier(value).as_string(operator)).replace(
+                ":'" + variable + "'", sql.Literal(value).as_string(operator)
+            )
+        operator.execute(source, prepare=False)
+        operator.execute(source, prepare=False)  # Idempotence, no secret rotation.
+        assert operator.execute(
+            "SELECT pg_has_role(%s,'xarionix_module_executor','MEMBER')", (runtime,)
+        ).fetchone() == (False,)
+        assert operator.execute(
+            "SELECT pg_get_userbyid(proowner) FROM pg_proc WHERE oid='core_apply_module_catalog(uuid,text,uuid)'::regprocedure"
+        ).fetchone() == ("xarionix_module_catalog",)
+    with psycopg.connect(**(connection | {"user": installer_name, "password": installer_secret})) as db:
+        assert db.execute("SELECT core_module_available('core',90)").fetchone() == (True,)
+        assert db.execute("SELECT core_module_authorized(%s,90)", (uuid.uuid4(),)).fetchone() == (False,)
+        assert db.execute("SELECT count(*) FROM runtime_deployments").fetchone() == (0,)
+        assert db.execute(
+            "SELECT has_schema_privilege(current_user,'public','CREATE'),has_table_privilege(current_user,'permissions','UPDATE'),has_table_privilege(current_user,'deployment_jobs','UPDATE'),has_function_privilege(current_user,'core_apply_module_catalog(uuid,text,uuid)','EXECUTE')"
+        ).fetchone() == (False, False, False, True)
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            db.execute("DELETE FROM audit_events")
+        db.rollback()
     for statement in (
         "ALTER TABLE users ADD COLUMN forbidden text",
         "ALTER TABLE users DISABLE TRIGGER ALL",

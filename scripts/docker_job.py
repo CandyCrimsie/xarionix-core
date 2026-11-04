@@ -28,7 +28,7 @@ ROOTLESS_IMAGE = (
     "docker:29.9.2-dind-rootless@sha256:ae083cc7de51e7a8e5a597f8fb774ca7914c408a95fc0f1477826a913479518a"
 )
 ROOTLESS_SOCKET = "/run/user/1000/docker.sock"  # DinD service's socket, NOT the VM socket.
-JOBS = ("compose", "integration", "secrets", "scan", "build", "publish")
+JOBS = ("compose", "integration", "secrets", "scan", "runtime-images", "build", "publish")
 PUBLIC_ENV = (
     "CI",
     "CI_JOB_ID",
@@ -48,6 +48,8 @@ REPORTS = {
     "gitleaks.json",
     "gitleaks-working-tree.json",
     "trivy-image.json",
+    "trivy-agent.json",
+    "trivy-runtime.json",
     "docker-job.json",
 }
 DIST = {"core-image.tar", "image.json"}
@@ -234,6 +236,10 @@ def inner(job: str) -> None:
                 )
             case "secrets":
                 ci.secrets_check()
+            case "runtime-images":
+                from scripts.runtime_images import check as runtime_image_check
+
+                runtime_image_check()
             case "scan" | "build":
                 ci.build(image)
                 if job == "build":

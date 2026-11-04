@@ -1,5 +1,6 @@
 .PHONY: install-dev validate lint typecheck test security check compose-check dev-config dev-up dev-down dev-status dev-logs dev-test integration-test locking-benchmark docker-build docker-scan
 .PHONY: package-benchmark
+.PHONY: deployment-agent-build runtime-example-build runtime-test runtime-integration-test runtime-images-check
 PYTHON ?= python3
 IMAGE ?= xarionix-core:local
 DEV_COMPOSE = docker compose --env-file .env.dev -f compose.dev.yaml
@@ -51,3 +52,13 @@ docker-scan:
 	.venv/bin/python -m scripts.ci trivy --image $(IMAGE)
 package-benchmark:
 	.venv/bin/python -m scripts.xpkg_benchmark
+deployment-agent-build:
+	docker build --target deployment-agent --tag xarionix-deployment-agent:local .
+runtime-example-build:
+	docker build --tag xarionix-hello:local examples/modules/hello-runtime
+runtime-test:
+	.venv/bin/python -m pytest -vv tests/test_runtime_artifacts.py tests/test_deployment_agent.py tests/test_deployments.py
+runtime-integration-test:
+	XARIONIX_RUN_DOCKER_TESTS=1 XARIONIX_RUN_RUNTIME_TESTS=1 .venv/bin/python -m pytest tests/integration/test_runtime_e2e.py -vv -s --junitxml=reports/runtime-e2e.xml
+runtime-images-check:
+	.venv/bin/python -m scripts.runtime_images

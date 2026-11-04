@@ -1,5 +1,11 @@
 # Жизненный цикл глобальной установки
 
+В 4D отдельно добавлен [runtime lifecycle](module-runtime-lifecycle.md). OCI installation
+enable блокируется до healthy exact image/job/generation. Runtime provision/start не включает
+namespace автоматически. Update/rollback остаются disabled до явного нового enable.
+`POST /module-install-plans/{id}/refresh` создаёт новый план с текущим snapshot, full verify,
+новым ID и без переноса approval. Terminal retire запрещает повторное enable/install.
+
 ```mermaid
 stateDiagram-v2
   [*] --> installed_disabled: approved install + trusted apply

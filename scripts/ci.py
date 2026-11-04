@@ -223,12 +223,14 @@ for path, expected in [('/health/ready',503),('/api/v1/me',401)]:
     print("Built image: non-root, OCI labels, read-only startup, live=200, unready=503, missing token=401 OK")
 
 
-def trivy(image: str) -> None:
+def trivy(image: str, report: str = "trivy-image.json") -> None:
+    if report not in {"trivy-image.json", "trivy-agent.json", "trivy-runtime.json"}:
+        raise ValueError("Unsupported image security report")
     reports = ROOT / "reports"
     reports.mkdir(exist_ok=True)
-    report = reports / "trivy-image.json"
+    report_path = reports / report
     # A scanner/network failure must not leave a previous successful result as this run's report.
-    report.unlink(missing_ok=True)
+    report_path.unlink(missing_ok=True)
     # Cache is inside the disposable scanner container, not on the host.
     cache = "/tmp/trivy-cache"  # nosec B108
     with tempfile.TemporaryDirectory(prefix="image-scan-", dir=ROOT / ".ci-tmp") as temporary:
@@ -272,7 +274,7 @@ def trivy(image: str) -> None:
                     "--format",
                     "json",
                     "--output",
-                    "/reports/trivy-image.json",
+                    "/reports/" + report,
                 ],
                 timeout=900,
             )
