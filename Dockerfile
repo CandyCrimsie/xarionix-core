@@ -32,6 +32,10 @@ COPY --chown=10001:10001 app ./app
 COPY --chown=10001:10001 scripts ./scripts
 COPY --chown=10001:10001 migrations ./migrations
 COPY --chown=10001:10001 alembic.ini ./
+# COPY preserves restrictive checkout modes (native CI uses umask 0077).
+# Only public application code is normalized; CAS/data/secrets remain private.
+# The Agent has a different UID and must be able to import this same code.
+RUN chmod -R u=rwX,go=rX app scripts migrations && chmod 644 alembic.ini
 USER 10001:10001
 EXPOSE 8000
 CMD ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--no-access-log", "--no-server-header", "--no-proxy-headers"]

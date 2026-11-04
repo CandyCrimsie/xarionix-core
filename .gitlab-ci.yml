@@ -180,7 +180,7 @@ integration:runtime-e2e:
   artifacts:
     when: always
     expire_in: 14 days
-    paths: [reports/runtime-e2e.xml, reports/runtime-benchmark.json]
+    paths: [reports/runtime-e2e.xml, reports/runtime-benchmark.json, reports/integration-diagnostics.json]
     reports:
       junit: reports/runtime-e2e.xml
 

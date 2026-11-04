@@ -58,6 +58,15 @@ def free_port():
         return listener.getsockname()[1]
 
 
+def stage_bootstrap_script(folder: Path) -> Path:
+    # A native shell runner keeps umask 0077. The checkout script may be 0700,
+    # owned by namespace root rather than the PostgreSQL UID inside its bind.
+    # Stage ONLY this public source file; dotenv/credentials stay private.
+    target = folder / "10-app-user.sh"
+    setup.atomic_write(target, (ROOT / "deploy/postgres/10-app-user.sh").read_text(), 0o755)
+    return target
+
+
 @pytest.fixture(scope="module")
 def stack(tmp_path_factory):
     if os.environ.get("XARIONIX_RUN_DOCKER_TESTS") != "1":
@@ -210,8 +219,9 @@ def stack(tmp_path_factory):
         }
     services["core"]["ports"] = [f"127.0.0.1:{core_port}:8000"]
     services["postgres"]["ports"] = [f"127.0.0.1:{postgres_port}:5432"]
+    bootstrap_script = stage_bootstrap_script(folder)
     for name in ("postgres", "keycloak-postgres"):
-        services[name]["volumes"][1]["source"] = str(ROOT / "deploy/postgres/10-app-user.sh")
+        services[name]["volumes"][1]["source"] = str(bootstrap_script)
     services["keycloak"]["environment"]["KC_HOSTNAME"] = config["KEYCLOAK_PUBLIC_URL"]
     services["keycloak"]["ports"] = [f"127.0.0.1:{keycloak_port}:8080"]
     services["keycloak"]["volumes"][0]["source"] = str(realm_path)

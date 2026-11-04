@@ -179,6 +179,10 @@ def test_stack_build_failure_is_diagnosed_even_without_containers_and_never_beco
     from integration import test_managed_stack as managed
 
     (tmp_path / "compose.dev.yaml").write_text((ROOT / "compose.dev.yaml").read_text())
+    (tmp_path / "deploy/postgres").mkdir(parents=True)
+    (tmp_path / "deploy/postgres/10-app-user.sh").write_text(
+        (ROOT / "deploy/postgres/10-app-user.sh").read_text()
+    )
     monkeypatch.setattr(managed, "ROOT", tmp_path)
     monkeypatch.setattr(managed, "preflight", lambda: None)
     monkeypatch.setenv("XARIONIX_RUN_DOCKER_TESTS", "1")
@@ -303,6 +307,40 @@ def test_native_runtime_ci_is_a_required_separate_serialized_real_engine_gate():
     assert not native.get("services")  # A second nested DinD cannot prove native limits.
     assert "extends" not in native  # No implicit Docker executor/socket configuration.
     assert native["artifacts"]["reports"]["junit"] == "reports/runtime-e2e.xml"
+    assert "reports/integration-diagnostics.json" in native["artifacts"]["paths"]
+
+
+def test_native_private_checkout_stages_only_public_bootstrap_script(tmp_path, monkeypatch):
+    from integration import test_managed_stack as managed
+
+    checkout = tmp_path / "checkout"
+    script = checkout / "deploy/postgres/10-app-user.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text("#!/bin/sh\n# Public bootstrap source\n")
+    script.chmod(0o700)
+    private = checkout / ".env"
+    private.write_text("PRIVATE_SENTINEL=never-copy\n")
+    private.chmod(0o600)
+    folder = tmp_path / "disposable"
+    folder.mkdir(mode=0o700)
+    monkeypatch.setattr(managed, "ROOT", checkout)
+    target = managed.stage_bootstrap_script(folder)
+    assert target != script and target.read_bytes() == script.read_bytes()
+    assert target.stat().st_mode & 0o777 == 0o755
+    assert script.stat().st_mode & 0o777 == 0o700
+    assert private.stat().st_mode & 0o777 == 0o600
+    assert set(folder.iterdir()) == {target}
+
+
+def test_image_source_modes_do_not_depend_on_host_umask():
+    dockerfile = (ROOT / "Dockerfile").read_text()
+    base = dockerfile.split(" AS base-runtime\n", 1)[1].split("USER 10001:10001", 1)[0]
+    assert "chmod -R u=rwX,go=rX app scripts migrations" in base
+    assert "chmod 644 alembic.ini" in base
+    # No permission widening for package data or arbitrary host paths.
+    assert "chmod -R u=rwX,go=rX /" not in dockerfile
+    hello = (ROOT / "examples/modules/hello-runtime/Dockerfile").read_text()
+    assert "COPY --chown=10001:10001 --chmod=0644 hello.py" in hello
 
 
 @pytest.mark.parametrize("lockfile", ["requirements.lock", "requirements-dev.lock"])

@@ -71,6 +71,95 @@ global prune и удаление рабочих volumes не допускают�
 незакоммиченными: после отдельного разрешения на commit/push потребуется реальный pipeline
 нового SHA, а не Retry старого job.
 
+### Job 208: native runner падает до checkout
+
+В job №208 на Sprint 4D shell executor выполнил prepare script, но завершил
+`prepare environment` с exit 1 ещё до получения исходников. Причина подтверждена на VM:
+`.bash_logout` нового `xarionix-runtime-ci` побайтно совпадал с Debian `/etc/skel` и при
+`SHLVL=1` вызывал `/usr/bin/clear_console -q`. У неинтерактивного login-shell нет console;
+с `set -e` ошибка logout перекрывала успешное выполнение prepare. Сам GitLab описывает
+этот случай в [shell profile loading](https://docs.gitlab.com/runner/shells/#shell-profile-loading).
+
+Воспроизведение: `/bin/bash --login` от UID 1001, stdin/stdout/stderr без TTY,
+`SHLVL=1`, `set -eo pipefail`, marker prepare и `exit 0` давали **exit 1**.
+Условие только этого logout-блока дополнено `[ -t 0 ] && [ -t 1 ]`;
+interactive console clearing сохранён. После применения тот же prepare даёт **exit 0**,
+а намеренный `exit 42` по-прежнему **42**. Ошибки jobs не подавляются.
+
+Идемпотентный stdlib operator tool, check-only по умолчанию:
+
+```bash
+sudo python3 scripts/configure_runtime_shell.py --home /home/xarionix-runtime-ci
+sudo python3 scripts/configure_runtime_shell.py --home /home/xarionix-runtime-ci --apply
+```
+
+При изменении сохраняется private backup 0600 с прежним владельцем; обновление атомарно,
+права/владелец исходного файла и остальной текст сохраняются. Symlinks, hardlinks,
+неизвестный/неоднозначный блок и concurrent edit приводят к отказу, не перезаписи.
+Runner token/config, system-wide `/etc/profile`, старый Docker Runner, systemd hardening,
+контейнеры и volumes не затрагиваются. Перезапуск сервиса не нужен: следующий login-shell
+читает исправленный профиль. Это **host-only fix**: Retry job текущего SHA может проверить
+его без commit/push локального helper/documentation. Предыдущая положительная native E2E
+репетиция проверяла runtime/isolation, но не Runner-generated login-shell/logout — поэтому
+не выявила этот отдельный дефект bootstrap.
+
+### Job 214: prepare исправлен, bootstrap PostgreSQL недоступен
+
+Retry №214 того же `b0d171bd` уже прошёл prepare/checkout и собрал тесты. Он выявил
+следующий дефект: native Runner намеренно имеет `UMask=0077`, а Git checkout сохранил
+`deploy/postgres/10-app-user.sh` как **0700**. Его read-only bind принадлежит namespace root,
+не PostgreSQL UID 70. Отдельный реальный container probe подтвердил отсутствие чтения
+для UID 70; Core source/alembic.ini при UID 10001 читались нормально. `pg_isready` проверяет
+доступность сервера, не успешность создания application role после init/restart, поэтому
+ошибка проявилась при первой миграции. Удаление существующей DB или ослабление FK не нужны.
+
+Исправление сохраняет строгий umask и секреты:
+
+- Disposable fixture копирует **только публичный** init script в своё staging directory
+  с явным 0755 и монтирует его read-only в обе PostgreSQL. Checkout script и dotenv не chmod'ятся.
+- Hello Dockerfile явно задаёт owner/mode 0644 для `hello.py`: иначе такой же закрытый
+  checkout создаёт образ с root-owned 0600 скриптом, недоступным runtime UID 10001.
+- Base runtime нормализует права **только app/scripts/migrations/alembic.ini** для двух
+  непривилегированных UID Core/Agent. CAS, agent state, секреты и host paths не затронуты.
+- Native job сохраняет также allowlisted `integration-diagnostics.json`, на который
+  ссылается ошибка fixture; raw stderr/credentials по-прежнему не публикуются.
+
+Эти исправления уже находятся в исходниках, поэтому для GitLab нужен **новый commit SHA**.
+Retry старого job №214 повторяет старую fixture/Dockerfile, даже при исправленном профиле.
+Commit/push выполняет пользователь отдельно. Сквозная host-проверка специально использует
+checkout с directories 0700/files 0600, executable bootstrap 0700 и исходным UMask=0077,
+а не нормализованный Docker-wrapper tar. Нет fallback на root/privileged или отключение
+read-only/seccomp/resource enforcement.
+
+Проверка исправлений 04.11.2026 (новый GitLab SHA ещё не отправлялся):
+
+| Проверка | Фактический результат |
+|---|---|
+| `make check` | 699 unit/API tests; coverage 72.37%, прежний gate 70%; Ruff/format/MyPy/shell/Bandit/оба pip-audit/Compose passed |
+| Managed-stack regression на настоящих PostgreSQL/Keycloak | 17 passed, 98.34 s |
+| Native rootless E2E с login-shell, CI identifiers, UMask 0077 и закрытым checkout | 1 passed, 367.60 s; JUnit/benchmark скопированы в локальные `reports/job-208-*` |
+| Agent/Hello smoke из закрытого checkout на native host | passed, отдельный вызов `check(scan=False)` |
+| Production Core build/read-only/non-root smoke и Trivy | passed на локальном Docker Desktop |
+| Agent/Hello build/smoke и оба Trivy HIGH/CRITICAL gates | passed на локальном Docker Desktop |
+| Gitleaks history/worktree и `git diff --check` | passed |
+
+Не путайте native E2E с GitLab job: повтор №214 подтвердил исправленный prepare, но ещё
+использовал старый bootstrap. Host rehearsal выше использовал новые локальные исходники.
+Commit/push оставлены пользователю. В commit нужны также новые
+`scripts/configure_runtime_shell.py` и `tests/test_runtime_runner_shell.py`.
+
+Дополнительное ограничение, **не причина отказа native E2E job**: прямой запуск
+`scripts.runtime_images` с Trivy на этом native rootless daemon не прошёл доступ к private
+bind-mounted scan/report paths. Scanner запрашивает host UID 1001, тогда как `uid_map`
+этого daemon отображает container UID 0 в host UID 1001. Реальный read-only probe при
+container UID 1001 не смог прочитать report directory 0700. Это не успешный security scan
+и не результат анализа уязвимостей. Отдельный smoke без scanner проверен явно; полные
+security scans выше действительно выполнены в локальном Docker Desktop. Native E2E CI
+job scanner не вызывает; `security:runtime-images` по-прежнему использует отдельный
+Docker-controller wrapper, без `allow_failure`/понижения severity. Универсальный native
+scanner UID mapping не менялся в этом точечном исправлении; private directories не
+делались world-writable и security checks не пропускались в pipeline.
+
 ## Pipeline
 
 Основной файл — `.gitlab-ci.yml`. Код не зависит от имени git remote или места клонирования (GitHub/GitLab). URL registry, project и credentials берутся только из стандартных GitLab variables. Автоматического production deployment нет.
