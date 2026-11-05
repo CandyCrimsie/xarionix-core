@@ -1,5 +1,22 @@
 # GitLab CI/CD и проверки Docker — Sprint 1.1
 
+## Gateway gates Sprint 6A
+
+`module-gateway:unit` и `module-gateway:security` запускают contract/relay/IPC/JWT
+regressions и Bandit; основной `test:unit` по-прежнему включает их и сохраняет coverage≥70%.
+Прежний `integration:managed-stack` проверяет реальные PG/KC/upgrade/role privileges.
+Новый обязательный `module-gateway:runtime-e2e` следует за прежним native runtime E2E
+на том же `runtime-rootless` tag: signed OCI business module, реальные Agents/RBAC и
+измеренные namespace/cgroups. Runner configuration/registration/policy не меняются.
+Недоверенным MR нельзя открывать существующий trusted shell runner или его secrets.
+Отсутствие native socket/delegation — явная ошибка, не allow_failure/успешный skip.
+
+`security:runtime-images` дополнительно собирает gateway-agent и hello-business,
+сканирует их Trivy и публикует только безопасные отчёты. Нет новых registry tokens,
+автоматического deployment, секретных dotenv artifacts или global cleanup.
+Локально: `make gateway-test`, затем явный dedicated native engine +
+`make gateway-integration-test`; см. [development](module-gateway-development.md).
+
 ## Runtime gates Sprint 4D
 
 Существующий rootless DinD/TLS wrapper сохранён: controller completion проверяется через

@@ -138,6 +138,15 @@ async def publish(ctx: Context, verified: Verified) -> tuple[ModulePackage, bool
     )
     ctx.session.add(value)
     await ctx.session.flush()
+    if verified.api_contract is not None:
+        from app.domains.module_gateway.contracts import APIContract
+        from app.domains.module_gateway.model import ModuleAPIContract
+
+        api = APIContract.model_validate(verified.api_contract)
+        ctx.session.add(
+            ModuleAPIContract(package_id=value.id, sha256=api.digest(), document=api.model_dump())
+        )
+        await ctx.session.flush()
     audit(ctx, "package.imported", "module_package", value.id, package_sha256=value.package_sha256)
     return value, True
 

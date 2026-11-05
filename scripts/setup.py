@@ -38,6 +38,18 @@ DEFAULTS = {
     "OIDC_AUDIENCE": "xarionix-core",
     "MODULES_AUDIENCE": "xarionix-core-modules",
     "DEPLOYMENT_AUDIENCE": "xarionix-core-deployment",
+    "GATEWAY_AUDIENCE": "xarionix-core-gateway",
+    "GATEWAY_REQUEST_BYTES": "65536",
+    "GATEWAY_RESPONSE_BYTES": "1048576",
+    "GATEWAY_JSON_DEPTH": "16",
+    "GATEWAY_OPERATION_ID_LENGTH": "63",
+    "GATEWAY_DEADLINE_SECONDS": "10",
+    "GATEWAY_PENDING": "64",
+    "GATEWAY_INGRESS": "64",
+    "GATEWAY_BODY_SECONDS": "10",
+    "GATEWAY_PER_HOST": "8",
+    "GATEWAY_PER_INSTALLATION": "2",
+    "GATEWAY_PER_USER": "4",
     "MODULES_CHECK_IN_SECONDS": "15",
     "MODULES_STALE_SECONDS": "90",
     "MODULES_LEASE_SECONDS": "30",
@@ -298,6 +310,31 @@ def validate(config: dict[str, str], *, development: bool = False) -> None:
         )
     if config.get("OIDC_AUDIENCE") != "xarionix-core":
         raise SetupError("invalid", "XARIONIX_OIDC_AUDIENCE")
+    gateway = config.get("GATEWAY_AUDIENCE", "xarionix-core-gateway")
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,120}", gateway) or gateway in {
+        config.get("OIDC_AUDIENCE"),
+        config.get("MODULES_AUDIENCE"),
+        config.get("DEPLOYMENT_AUDIENCE"),
+    }:
+        raise SetupError("invalid", "XARIONIX_GATEWAY_AUDIENCE")
+    for key, minimum, maximum in (
+        ("GATEWAY_REQUEST_BYTES", 2, 65536),
+        ("GATEWAY_RESPONSE_BYTES", 2, 1048576),
+        ("GATEWAY_JSON_DEPTH", 1, 16),
+        ("GATEWAY_OPERATION_ID_LENGTH", 1, 63),
+        ("GATEWAY_DEADLINE_SECONDS", 1, 15),
+        ("GATEWAY_PENDING", 1, 64),
+        ("GATEWAY_INGRESS", 1, 128),
+        ("GATEWAY_BODY_SECONDS", 1, 30),
+        ("GATEWAY_PER_HOST", 1, 8),
+        ("GATEWAY_PER_INSTALLATION", 1, 4),
+        ("GATEWAY_PER_USER", 1, 8),
+    ):
+        try:
+            if not minimum <= int(config.get(key, DEFAULTS[key])) <= maximum:
+                raise ValueError()
+        except ValueError:
+            raise SetupError("invalid", "XARIONIX_" + key) from None
     if not re.fullmatch(
         r"[A-Za-z0-9._:-]{1,120}", config.get("DEPLOYMENT_AUDIENCE", "xarionix-core-deployment")
     ) or config.get("DEPLOYMENT_AUDIENCE", "xarionix-core-deployment") in {

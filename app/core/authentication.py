@@ -14,13 +14,17 @@ async def verified_claims(
     if credential is not None:
         try:
             claims = await request.app.state.oidc.verify(credential.credentials)
+            purpose = claims.get("xarionix_principal")
+            if purpose is not None and not isinstance(purpose, str):
+                raise InvalidToken()
             audiences = claims.get("aud", [])
             if isinstance(audiences, str):
                 audiences = [audiences]
             if (
-                claims.get("xarionix_principal") in {"machine", "deployment"}
+                purpose in {"machine", "deployment", "gateway"}
                 or request.app.state.settings.modules_audience in audiences
                 or request.app.state.settings.deployment_audience in audiences
+                or request.app.state.settings.gateway_audience in audiences
             ):
                 raise InvalidToken()
             return claims  # type: ignore[no-any-return]
@@ -65,3 +69,24 @@ async def verified_deployment_claims(
         except InvalidToken:
             pass
     raise HTTPException(401, "Invalid or missing deployment token", headers={"WWW-Authenticate": "Bearer"})
+
+
+async def verified_gateway_claims(
+    request: Request, credential: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]
+) -> dict[str, Any]:
+    if credential is not None:
+        try:
+            audience = request.app.state.settings.gateway_audience
+            claims = await request.app.state.oidc.verify(credential.credentials, audience=audience)
+            if (
+                claims.get("xarionix_principal") != "gateway"
+                or claims.get("aud") not in (audience, [audience])
+                or not isinstance(claims.get("azp"), str)
+                or not claims["azp"]
+                or claims.get("client_id", claims["azp"]) != claims["azp"]
+            ):
+                raise InvalidToken()
+            return claims  # type: ignore[no-any-return]
+        except InvalidToken:
+            pass
+    raise HTTPException(401, "Invalid or missing gateway token", headers={"WWW-Authenticate": "Bearer"})

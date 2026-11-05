@@ -12,6 +12,7 @@ import httpx
 
 from app.domains.deployments.artifacts import write_oci_archive
 from app.domains.deployments.contracts import SAFETY, Delivery, RuntimeReport
+from app.domains.module_gateway.contracts import read_contract
 from app.domains.packages.archive import verify
 from app.domains.packages.codec import PackageError
 from app.domains.packages.schema import TrustStore
@@ -70,6 +71,9 @@ class DeploymentAgent:
         contract = write_oci_archive(package, checked.manifest, archive)
         if contract != job.runtime:
             raise PackageError("deployment_runtime_binding_changed")
+        api = read_contract(package, checked.manifest)
+        if job.profile == "module-api-private-v1" and (api is None or api != job.api_contract):
+            raise PackageError("deployment_api_binding_changed")
         return archive
 
     def execute(self, job: Delivery) -> None:

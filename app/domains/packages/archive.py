@@ -76,6 +76,7 @@ class Verified:
     size: int
     key_fingerprint: str
     core_compatible: bool
+    api_contract: dict[str, Any] | None = None
 
     def report(self) -> dict[str, Any]:
         return {
@@ -283,6 +284,9 @@ def verify(path: Path, trust: TrustStore, limits: Limits = Limits()) -> Verified
                         raise PackageError("artifact_integrity_mismatch")
                     if total > limits.total:
                         raise PackageError("zip_expansion_limit")
+            from app.domains.module_gateway.contracts import read_contract
+
+            api = read_contract(path, manifest)
             return Verified(
                 manifest,
                 data,
@@ -292,6 +296,7 @@ def verify(path: Path, trust: TrustStore, limits: Limits = Limits()) -> Verified
                 size,
                 fingerprint(key.public_key),
                 Range.parse(manifest.compatibility.core).contains(VERSION),
+                api.model_dump() if api else None,
             )
     except (
         OSError,

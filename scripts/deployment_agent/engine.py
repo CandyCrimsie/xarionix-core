@@ -5,12 +5,15 @@ import os
 import stat
 import time
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
 
 from app.domains.deployments.contracts import PROFILES, Delivery, RuntimeReport
+from app.domains.module_gateway.contracts import Dispatch, json_bytes
+from scripts.deployment_agent.ipc import BRIDGE, exchange
 
 
 class EngineFailure(Exception):
@@ -34,6 +37,10 @@ for path in ('live','ready'):
  r.read(4096)
  c.close()
 """
+API_ISOLATION_PROBE = """import pathlib,os,json
+interfaces=[line.split(':')[0].strip() for line in pathlib.Path('/proc/net/dev').read_text().splitlines()[2:]]
+print(json.dumps({'interfaces':interfaces,'engine':any(os.path.exists(p) for p in ('/var/run/docker.sock','/run/docker.sock'))}))
+"""
 
 
 class Engine:
@@ -55,9 +62,78 @@ class Engine:
             follow_redirects=False,
         )
         self.expected_id = expected_id
+        self.socket = socket
 
     def close(self) -> None:
         self.client.close()
+
+    def business(self, job: Delivery, frame: Dispatch) -> dict[str, Any]:
+        """Only an independently verified, locally acknowledged signed runtime is callable."""
+        contract = job.api_contract
+        context = frame.context
+        op = (
+            next((o for o in contract.operations if o.id == context.operation_id), None) if contract else None
+        )
+        seconds = (context.deadline - datetime.now(UTC)).total_seconds()
+        if (
+            job.profile != "module-api-private-v1"
+            or not contract
+            or not op
+            or context.installation_id != job.installation_id
+            or context.deployment_generation != job.generation
+            or frame.package_sha256 != job.package_sha256
+            or frame.contract_sha256 != contract.digest()
+            or frame.image_digest != job.runtime.image_digest
+            or context.permission != op.permission
+            or frame.response_max_bytes > op.response.max_bytes
+            or not 0 < seconds <= 15
+        ):
+            raise EngineFailure("runtime_binding_changed")
+        json_bytes(frame.body, limit=min(65536, op.request.max_bytes), depth=frame.json_depth)
+        matches = [
+            r
+            for r in self.owned(job)
+            if r.get("Labels", {}).get("io.xarionix.deployment.image") == frame.image_digest
+        ]
+        if len(matches) != 1:
+            raise EngineFailure("runtime_binding_changed")
+        identifier = matches[0]["Id"]
+        info = self.inspect(identifier)
+        if not info or not info.get("State", {}).get("Running"):
+            raise EngineFailure("module_unavailable")
+        self.constraints(info, job)
+        value = self.call(
+            "POST",
+            "/containers/" + identifier + "/exec",
+            json={
+                "AttachStdout": True,
+                "AttachStderr": True,
+                "AttachStdin": True,
+                "Tty": False,
+                "User": "10001:10001",
+                "Privileged": False,
+                "Cmd": ["/usr/local/bin/python", "-I", "-c", BRIDGE],
+            },
+        )
+        if not isinstance(value, dict) or not isinstance(value.get("Id"), str):
+            raise EngineFailure("module_unavailable")
+        try:
+            response = exchange(
+                self.socket, value["Id"], frame.model_dump_json().encode(), seconds, frame.response_max_bytes
+            )
+            status = self.call("GET", "/exec/" + value["Id"] + "/json")
+            if not status or status.get("Running") is not False or status.get("ExitCode") != 0:
+                raise EngineFailure("module_response_invalid")
+            if "body" in response:
+                json_bytes(response["body"], limit=frame.response_max_bytes, depth=frame.json_depth)
+                if not isinstance(response["body"], dict):
+                    raise ValueError("module_json_object_required")
+                return {"body": response["body"]}
+            raise EngineFailure("module_response_invalid")
+        except (OSError, TimeoutError):
+            raise EngineFailure("module_timeout") from None
+        except (ValueError, TypeError, RecursionError):
+            raise EngineFailure("module_response_invalid") from None
 
     def call(self, method: str, path: str, **kwargs: Any) -> Any:
         try:
@@ -234,6 +310,15 @@ class Engine:
                 or measured.get("cpu") != f"{limits['cpu_quota']} 100000"
             ):
                 raise EngineFailure("isolation_unavailable")
+            if job.profile == "module-api-private-v1":
+                network = info.get("NetworkSettings", {})
+                measured_api = json.loads(self.execute(info["Id"], API_ISOLATION_PROBE))
+                if (
+                    set(network.get("Networks", {})) != {"none"}
+                    or network.get("Ports")
+                    or measured_api != {"interfaces": ["lo"], "engine": False}
+                ):
+                    raise EngineFailure("isolation_unavailable")
 
     def load(self, path: Path, job: Delivery) -> None:
         def chunks() -> Iterator[bytes]:

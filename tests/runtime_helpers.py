@@ -54,6 +54,7 @@ def runtime_package(
     publisher="test-publisher",
     version="1.0.0",
     key=None,
+    manifest=None,
 ):
     folder.mkdir(parents=True, exist_ok=True)
     source = source or docker_archive(folder / "image.tar")
@@ -61,7 +62,7 @@ def runtime_package(
     contract = convert(source, distribution)
     if transform:
         transform(distribution)
-    data = manifest_data(module=module, namespace=namespace, publisher=publisher, version=version)
+    data = manifest or manifest_data(module=module, namespace=namespace, publisher=publisher, version=version)
     template = folder / "manifest.json"
     template.write_text(json.dumps(data))
     if key is None:

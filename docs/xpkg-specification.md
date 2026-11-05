@@ -1,5 +1,9 @@
 # `.xpkg` V1 — нормативный формат
 
+6A определяет [module-api-v1.json](module-api-contract.md) как дополнительный signed
+inventory resource, не новый manifest/signature format. Старые canonical test vectors
+и artifact limits остаются прежними. Без этого resource legacy package не получает API.
+
 4D определяет [bounded OCI runtime profile V1](module-runtime-artifacts.md) внутри прежних
 artifact roles/подписанного inventory. Manifest/signature format и лимиты V1 не изменены.
 Valid inert XPKG не обязательно является допустимым runtime: OCI проверяется дополнительно,

@@ -1,5 +1,13 @@
 # Xarionix Core
 
+Sprint 6A: [company-authorized Module API Gateway](docs/module-api-gateway.md),
+[signed operation contract](docs/module-api-contract.md), отдельный outbound Gateway
+Agent и opt-in [private IPC profile](docs/module-runtime-private-network.md), сохраняющий
+network=none. [Разработка Hello Business](docs/module-gateway-development.md),
+[security](docs/module-gateway-security.md), [recovery](docs/module-gateway-recovery.md),
+[фактические проверки и ограничения](docs/sprint-6a-validation.md).
+Relay V1 требует одного Core worker; Module SDK/DB/secrets и Sprint 6B не реализуются.
+
 Sprint 4D добавляет [изолированный OCI runtime](docs/module-runtime.md), отдельный
 [Deployment Agent](docs/deployment-agent.md), signed offline artifacts, approved lifecycle,
 health/generation gates и safe retirement. Core не получает Docker socket и не выполняет код.

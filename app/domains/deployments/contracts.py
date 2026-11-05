@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.domains.deployments.artifacts import RuntimeContract
+from app.domains.module_gateway.contracts import APIContract
 from app.domains.packages.codec import canonical
 
 Operation = Literal[
@@ -23,10 +24,11 @@ Operation = Literal[
     "quarantine",
     "retire",
 ]
-Profile = Literal["offline-small-v1", "offline-medium-v1"]
+Profile = Literal["offline-small-v1", "offline-medium-v1", "module-api-private-v1"]
 PROFILES: dict[str, dict[str, int]] = {
     "offline-small-v1": {"memory": 268435456, "cpu_quota": 50000, "pids": 64, "tmpfs": 67108864},
     "offline-medium-v1": {"memory": 536870912, "cpu_quota": 100000, "pids": 128, "tmpfs": 67108864},
+    "module-api-private-v1": {"memory": 268435456, "cpu_quota": 50000, "pids": 64, "tmpfs": 67108864},
 }
 SAFETY = frozenset({"stop", "quarantine", "retire", "deprovision", "inspect"})
 
@@ -108,6 +110,7 @@ class Delivery(Input):
     profile: Profile
     engine_id: str
     trust: dict[str, Any]
+    api_contract: APIContract | None = None
 
 
 def digest(body: dict[str, Any]) -> str:

@@ -153,7 +153,7 @@ security:runtime-images:
   artifacts:
     when: always
     expire_in: 7 days
-    paths: [reports/trivy-agent.json, reports/trivy-runtime.json]
+    paths: [reports/trivy-agent.json, reports/trivy-runtime.json, reports/trivy-gateway-agent.json, reports/trivy-business-runtime.json]
 
 # Native Linux shell executor, dedicated unprivileged account, TWO separate
 # rootless daemons. Never bind a VM/system Docker socket into a Docker job.
@@ -183,6 +183,48 @@ integration:runtime-e2e:
     paths: [reports/runtime-e2e.xml, reports/runtime-benchmark.json, reports/integration-diagnostics.json]
     reports:
       junit: reports/runtime-e2e.xml
+
+module-gateway:unit:
+  extends: .python
+  stage: test
+  script:
+    - .venv/bin/python -m pytest tests/test_module_gateway*.py -vv --junitxml=reports/gateway-unit.xml
+  artifacts:
+    when: always
+    expire_in: 14 days
+    reports:
+      junit: reports/gateway-unit.xml
+
+module-gateway:security:
+  extends: .python
+  stage: security
+  script:
+    - .venv/bin/bandit -q -r app/domains/module_gateway app/api/v1/module_gateway.py scripts/gateway_agent.py scripts/deployment_agent
+    - .venv/bin/python -m pytest tests/test_module_gateway*.py -vv
+
+module-gateway:runtime-e2e:
+  stage: integration
+  tags: [runtime-rootless]
+  rules: *full_rules
+  needs:
+    - job: integration:runtime-e2e
+      artifacts: false
+  timeout: 30 minutes
+  variables:
+    XARIONIX_RUN_DOCKER_TESTS: "1"
+    XARIONIX_RUN_GATEWAY_TESTS: "1"
+  script:
+    - test -n "$XARIONIX_RUNTIME_ENGINE_SOCKET" || { echo "Native rootless gateway E2E requires the dedicated runtime socket and real cgroup delegation"; exit 1; }
+    - python3 -m venv .venv
+    - .venv/bin/python -m pip install -r requirements-dev.lock
+    - .venv/bin/python -m pip install --no-deps -e .
+    - .venv/bin/python -m pytest tests/integration/test_module_gateway_e2e.py -vv --junitxml=reports/gateway-e2e.xml
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths: [reports/gateway-e2e.xml, reports/gateway-benchmark.json, reports/integration-diagnostics.json]
+    reports:
+      junit: reports/gateway-e2e.xml
 
 build:production:
   extends: .docker

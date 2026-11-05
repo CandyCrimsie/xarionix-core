@@ -50,6 +50,8 @@ REPORTS = {
     "trivy-image.json",
     "trivy-agent.json",
     "trivy-runtime.json",
+    "trivy-gateway-agent.json",
+    "trivy-business-runtime.json",
     "docker-job.json",
 }
 DIST = {"core-image.tar", "image.json"}

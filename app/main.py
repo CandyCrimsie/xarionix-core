@@ -18,6 +18,7 @@ from starlette.responses import Response
 
 from app.api.v1.deployments import router as deployments_router
 from app.api.v1.installations import router as installations_router
+from app.api.v1.module_gateway import router as gateway_router
 from app.api.v1.modules import router as modules_router
 from app.api.v1.packages import router as packages_router
 from app.api.v1.rbac import router as rbac_router
@@ -27,6 +28,7 @@ from app.core.config import Settings
 from app.core.database import create_database, database_ready
 from app.core.logging import configure_logging
 from app.core.module_body_limit import ModuleBodyLimit
+from app.domains.module_gateway.transport import Relay
 from app.domains.packages.codec import PackageError
 from app.integrations.keycloak.oidc import OIDCVerifier
 from app.version import VERSION
@@ -46,6 +48,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         engine, sessions = create_database(config)
         app.state.engine, app.state.sessions = engine, sessions
+        app.state.gateway = Relay(config, sessions)
         try:
             async with httpx.AsyncClient(
                 verify=ssl.create_default_context(),
@@ -58,6 +61,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await app.state.oidc.ready()
                 yield
         finally:
+            app.state.gateway.close()
             await engine.dispose()
 
     app = FastAPI(
@@ -69,7 +73,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/openapi.json" if config.docs_enabled else None,
     )
     app.state.settings = config
-    app.add_middleware(ModuleBodyLimit)
+    app.add_middleware(
+        ModuleBodyLimit,
+        gateway_ingress=config.gateway_ingress,
+        gateway_body_seconds=config.gateway_body_seconds,
+    )
 
     @app.exception_handler(PackageError)
     async def invalid_package(request: Request, error: PackageError) -> JSONResponse:
@@ -155,5 +163,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(modules_router)
     app.include_router(packages_router)
     app.include_router(installations_router)
+    app.include_router(gateway_router)
     app.include_router(deployments_router)
     return app

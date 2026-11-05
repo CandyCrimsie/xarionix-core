@@ -1,5 +1,11 @@
 # Модель безопасности
 
+6A: [gateway threat model](module-gateway-security.md),
+[live company authorization](module-gateway-authorization.md),
+[isolated IPC](module-runtime-private-network.md). Gateway principal имеет четвёртую
+отдельную audience; human JWT и execution context не взаимозаменяемы. Bodies/tokens
+не сохраняются в БД; deployment queue остаётся исключительно control plane.
+
 4D: [runtime isolation](module-runtime-security.md), [artifact binding](module-runtime-artifacts.md),
 [recovery/revocation](module-runtime-recovery.md). Deployment JWT имеет отдельную audience и
 principal, не создаёт User/Membership/ModuleService. Он не подходит human/business API.

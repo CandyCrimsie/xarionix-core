@@ -183,7 +183,7 @@ async def build_version(actors, bundle, folder, version, *, ready=True):
         )
 
 
-def deploy(actors, installation, host, operation, *, success=True):
+def deploy(actors, installation, host, operation, *, success=True, profile="offline-small-v1"):
     # Metadata changes can legitimately queue a safety stop concurrently. Wait
     # for it, then explicitly prepare/approve a FRESH snapshot; never retry a
     # queued execution or reuse approval across generations.
@@ -202,6 +202,7 @@ def deploy(actors, installation, host, operation, *, success=True):
                 "installation_id": installation["id"],
                 "host_id": host["id"],
                 "operation": operation,
+                "profile": profile,
                 "expected_installation_generation": installation["generation"],
                 "expected_deployment_generation": current["generation"] if current else 0,
             },

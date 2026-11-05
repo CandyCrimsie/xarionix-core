@@ -224,7 +224,13 @@ for path, expected in [('/health/ready',503),('/api/v1/me',401)]:
 
 
 def trivy(image: str, report: str = "trivy-image.json") -> None:
-    if report not in {"trivy-image.json", "trivy-agent.json", "trivy-runtime.json"}:
+    if report not in {
+        "trivy-image.json",
+        "trivy-agent.json",
+        "trivy-runtime.json",
+        "trivy-gateway-agent.json",
+        "trivy-business-runtime.json",
+    }:
         raise ValueError("Unsupported image security report")
     reports = ROOT / "reports"
     reports.mkdir(exist_ok=True)

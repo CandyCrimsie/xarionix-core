@@ -1,5 +1,11 @@
 # Контракт namespaces будущих модулей
 
+Sprint 6A: [signed API operation](module-api-contract.md) ссылается только на declared
+company permission собственного namespace. [Gateway authorization](module-gateway-authorization.md)
+использует прежний effective RBAC/SQL availability, без auto-grants или admin bypass.
+Deployment approval показывает API contract/digest; runtime/private identity —
+дополнительные availability conditions, а не источник пользовательских прав.
+
 **Реализовано в Sprint 4C:** [module permission activation](module-permission-activation.md).
 Deployment authority — отдельный operator и fixed SQL capability, не HTTP/GUC. Namespace owner
 неизменяем. Нет auto-grants; definitions/assignments имеют epoch, поэтому uninstall/reinstall и

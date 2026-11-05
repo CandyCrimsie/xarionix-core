@@ -1,5 +1,11 @@
 # Архитектура Core — Sprint 4D
 
+Sprint 6A добавляет отдельный [business data plane](module-api-gateway.md) в
+`app/domains/module_gateway` и `scripts/gateway_agent.py`: signed operations,
+company RBAC, ephemeral bounded relay, private fixed IPC к runtime с network=none.
+Additive `0012_module_gateway` не меняет catalog authority или Autonomous 4A.
+[Аудит и threat model до реализации](module-gateway-architecture-audit.md).
+
 4D: [Core / Agent / Runtime](module-runtime.md), [security boundaries](module-runtime-security.md).
 `app/domains/deployments` — control-plane models/contracts, `scripts/deployment_agent` —
 отдельный engine adapter/process. Core не импортирует adapter. `0011_deployment_runtime`

@@ -41,6 +41,18 @@ class Settings(BaseSettings):
     oidc_issuer: str = Field(max_length=512)
     oidc_audience: str = Field(default="xarionix-core", min_length=1, max_length=120)
     deployment_audience: str = Field(default="xarionix-core-deployment", min_length=1, max_length=120)
+    gateway_audience: str = Field(default="xarionix-core-gateway", min_length=1, max_length=120)
+    gateway_request_bytes: int = Field(default=65536, ge=2, le=65536)
+    gateway_response_bytes: int = Field(default=1048576, ge=2, le=1048576)
+    gateway_json_depth: int = Field(default=16, ge=1, le=16)
+    gateway_operation_id_length: int = Field(default=63, ge=1, le=63)
+    gateway_deadline_seconds: int = Field(default=10, ge=1, le=15)
+    gateway_pending: int = Field(default=64, ge=1, le=64)
+    gateway_ingress: int = Field(default=64, ge=1, le=128)
+    gateway_body_seconds: int = Field(default=10, ge=1, le=30)
+    gateway_per_host: int = Field(default=8, ge=1, le=8)
+    gateway_per_installation: int = Field(default=2, ge=1, le=4)
+    gateway_per_user: int = Field(default=4, ge=1, le=8)
     modules_audience: str = Field(
         default="xarionix-core-modules", min_length=1, max_length=120, pattern=r"^[A-Za-z0-9._:-]+$"
     )
@@ -79,7 +91,10 @@ class Settings(BaseSettings):
         development = self.environment == "development"
         if not self.packages_storage_root.is_absolute() or ".." in self.packages_storage_root.parts:
             raise ValueError("Package storage must be an absolute operator-configured path")
-        if len({self.modules_audience, self.oidc_audience, self.deployment_audience}) != 3:
+        if (
+            len({self.modules_audience, self.oidc_audience, self.deployment_audience, self.gateway_audience})
+            != 4
+        ):
             raise ValueError("Machine and human audiences must differ")
         if self.modules_stale_seconds < self.modules_check_in_seconds * 2:
             raise ValueError("Stale threshold must allow at least two check-ins")

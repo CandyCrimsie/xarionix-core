@@ -50,5 +50,10 @@ LABEL org.opencontainers.image.title="Xarionix Deployment Agent"
 USER 1000:1000
 CMD ["python", "-m", "scripts.deployment_agent"]
 
+# Separate data-plane service and OIDC principal; it never consumes deployment jobs.
+FROM deployment-agent AS gateway-agent
+LABEL org.opencontainers.image.title="Xarionix Module Gateway Agent"
+CMD ["python", "-m", "scripts.gateway_agent"]
+
 # Preserve the default production build as Core, not the Deployment Agent target.
 FROM base-runtime AS runtime

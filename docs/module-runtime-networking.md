@@ -1,5 +1,10 @@
 # Runtime networking и health
 
+6A: отдельный approved [module-api-private-v1](module-runtime-private-network.md)
+сохраняет network=none и использует fixed exec stdin/stdout bridge к loopback API.
+Он не открывает bridge/host/public ports и не меняет старые offline profiles.
+Ниже описан исходный offline contract 4D, который остаётся совместимым.
+
 Первый production profile намеренно **offline**: `NetworkMode=none`, без host ports,
 Docker/Compose/DB networks и маршрутов к Core/Keycloak/Internet. Пересылка business API
 из OCI-модуля в этом профиле не реализована; для неё нужен отдельный reviewed network

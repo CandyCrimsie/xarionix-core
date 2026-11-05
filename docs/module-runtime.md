@@ -1,5 +1,10 @@
 # Изолированный runtime — Sprint 4D
 
+6A добавляет opt-in `module-api-private-v1` с [фиксированным IPC](module-runtime-private-network.md)
+и signed API resource. Старые offline profiles/health contract не меняются; network=none
+сохранён. Business вызовы идут через [Core Gateway](module-api-gateway.md), требуют
+company RBAC и не используют deployment jobs как очередь запросов.
+
 Installation и runtime — разные факты. Импорт XPKG не запускает образ; применённый
 install plan не означает готовность сервиса; healthy runtime сам по себе не выдаёт RBAC.
 Standard OCI-модуль выполняется отдельным Deployment Agent на явно назначенном host.

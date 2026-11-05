@@ -144,6 +144,19 @@ async def runtime(
                 and deployed.last_seen
                 and deployed.last_seen > fresh
             )
+            from app.domains.module_gateway.contracts import API_RESOURCE
+            from app.domains.module_gateway.model import GatewayIdentity, ModuleAPIContract
+
+            if any(a.path == API_RESOURCE for a in manifest.artifacts):
+                gateway_identity = await ctx.session.get(GatewayIdentity, host.id)
+                api = await ctx.session.get(ModuleAPIContract, value.package_id)
+                ready = bool(
+                    ready
+                    and deployed.profile == "module-api-private-v1"
+                    and api
+                    and gateway_identity
+                    and gateway_identity.status == "active"
+                )
             result.update(
                 {
                     "state": "healthy" if ready else deployed.observed,
@@ -389,7 +402,21 @@ async def snapshot(
                 "namespace_authority_revision": grant.updated_at.isoformat() if grant else None,
             }
         )
+    from app.domains.module_gateway.model import ModuleAPIContract
+
+    api_metadata = await ctx.session.get(ModuleAPIContract, target.id)
     return {
+        **(
+            {
+                "module_api": {
+                    "sha256": api_metadata.sha256,
+                    "contract": api_metadata.document,
+                    "required_profile": "module-api-private-v1",
+                }
+            }
+            if api_metadata
+            else {}
+        ),
         "schema_version": 1,
         "action": action,
         "module_id": target.module_id,

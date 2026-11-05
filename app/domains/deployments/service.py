@@ -158,6 +158,20 @@ async def snapshot(ctx: Context, payload: PlanCreate, runtime: dict[str, Any]) -
     )
     if runtime["platform"] != target_host.platform:
         fail(409, "deployment_platform_incompatible")
+    api_metadata: dict[str, Any] = {}
+    selected_profile = current.profile if current and payload.operation in SAFETY else payload.profile
+    if selected_profile == "module-api-private-v1":
+        from app.domains.module_gateway.model import ModuleAPIContract
+
+        api = await ctx.session.get(ModuleAPIContract, package.id)
+        if api is None and payload.operation not in SAFETY:
+            fail(409, "signed_module_api_required")
+        if api is not None:
+            api_metadata = {
+                "api_contract": api.document,
+                "api_contract_sha256": api.sha256,
+                "gateway_protocol": "module-gateway-poll-v1",
+            }
     if payload.operation not in SAFETY and (
         not await trusted(ctx.session, package)
         or await ctx.session.get(ModuleRetirement, value.id) is not None
@@ -176,6 +190,7 @@ async def snapshot(ctx: Context, payload: PlanCreate, runtime: dict[str, Any]) -
     ):
         fail(409, "deployment_stop_before_deprovision")
     return {
+        **api_metadata,
         "schema_version": 1,
         "installation_id": str(value.id),
         "host_id": str(target_host.id),
@@ -465,6 +480,7 @@ async def check_in(ctx: MachineContext, value: DeploymentHost, payload: CheckIn)
             fail(409, "deployment_package_missing")
         deliveries.append(
             {
+                **({"api_contract": job.body["api_contract"]} if "api_contract" in job.body else {}),
                 "id": job.id,
                 "fence": job.fence,
                 "host_id": value.id,

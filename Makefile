@@ -1,6 +1,7 @@
 .PHONY: install-dev validate lint typecheck test security check compose-check dev-config dev-up dev-down dev-status dev-logs dev-test integration-test locking-benchmark docker-build docker-scan
 .PHONY: package-benchmark
 .PHONY: deployment-agent-build runtime-example-build runtime-test runtime-integration-test runtime-images-check
+.PHONY: gateway-agent-build gateway-test gateway-integration-test
 PYTHON ?= python3
 IMAGE ?= xarionix-core:local
 DEV_COMPOSE = docker compose --env-file .env.dev -f compose.dev.yaml
@@ -62,3 +63,10 @@ runtime-integration-test:
 	XARIONIX_RUN_DOCKER_TESTS=1 XARIONIX_RUN_RUNTIME_TESTS=1 .venv/bin/python -m pytest tests/integration/test_runtime_e2e.py -vv -s --junitxml=reports/runtime-e2e.xml
 runtime-images-check:
 	.venv/bin/python -m scripts.runtime_images
+gateway-agent-build:
+	docker build --target gateway-agent --tag xarionix-gateway-agent:local .
+gateway-test:
+	.venv/bin/python -m pytest tests/test_module_gateway*.py -vv
+gateway-integration-test:
+	@test -n "$(XARIONIX_RUNTIME_ENGINE_SOCKET)" || { echo "Set the dedicated native rootless runtime socket"; exit 1; }
+	XARIONIX_RUN_DOCKER_TESTS=1 XARIONIX_RUN_GATEWAY_TESTS=1 .venv/bin/python -m pytest tests/integration/test_module_gateway_e2e.py -vv --junitxml=reports/gateway-e2e.xml

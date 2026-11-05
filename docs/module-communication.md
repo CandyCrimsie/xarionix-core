@@ -1,5 +1,9 @@
 # Автономные модули — Sprint 4A
 
+6A [Standard Module business gateway](module-api-gateway.md) — отдельный процесс,
+audience и operation protocol. Этот 4A Autonomous protocol не меняется; синхронный
+RPC к arbitrary external module URL не реализован. [Транспорт 6A](module-gateway-transport.md).
+
 4D Deployment Agent — [другой principal/protocol](deployment-agent.md), с отдельной audience,
 host binding и job allowlist. Он не расширяет 4A ping/get_status до shell/Docker executor.
 Offline OCI runtime не получает бизнес-машинный JWT. Autonomous binding/heartbeat ниже сохранены.

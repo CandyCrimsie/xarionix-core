@@ -21,6 +21,7 @@ def load_models() -> None:
     )
     from app.domains.invitations.model import Invitation  # noqa: F401
     from app.domains.memberships.model import Membership  # noqa: F401
+    from app.domains.module_gateway.model import GatewayIdentity, ModuleAPIContract  # noqa: F401
     from app.domains.modules.model import (  # noqa: F401
         ModuleCommand,
         ModuleCompanyScope,

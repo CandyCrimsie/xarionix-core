@@ -244,7 +244,7 @@ async def test_split_owner_migrator_runtime_real_upgrade_and_api_mutations(stack
             )
         )
         assert operator.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0011_deployment_runtime",
+            "0012_module_gateway",
         )
         assert operator.execute("SELECT id FROM memberships WHERE company_id=%s", (cid,)).fetchone() == (
             membership,
