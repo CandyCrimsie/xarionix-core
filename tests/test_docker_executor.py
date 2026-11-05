@@ -82,6 +82,42 @@ def test_source_archive_excludes_credentials_and_preserves_history(tmp_path, mon
         assert archive.getmember("source.py").uid == 0
 
 
+def test_source_archive_preserves_real_detached_packed_refs_checkout(tmp_path, monkeypatch):
+    source, restored = tmp_path / "source", tmp_path / "restored"
+    source.mkdir()
+    subprocess.run(["git", "init", "--quiet", str(source)], check=True)
+    (source / "tracked.py").write_text("print('source')\n")
+    subprocess.run(["git", "add", "tracked.py"], cwd=source, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=CI Test",
+            "-c",
+            "user.email=ci@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "fixture",
+        ],
+        cwd=source,
+        check=True,
+    )
+    subprocess.run(["git", "pack-refs", "--all", "--prune"], cwd=source, check=True)
+    subprocess.run(["git", "checkout", "--quiet", "--detach", "HEAD"], cwd=source, check=True)
+    assert not any(p.is_file() for p in (source / ".git/refs").rglob("*"))
+    monkeypatch.setattr(job, "ROOT", source)
+    output = io.BytesIO()
+    job.archive_source(output)
+    with tarfile.open(fileobj=output) as archive:
+        archive.extractall(restored, filter="data")
+    result = subprocess.run(["git", "ls-files"], cwd=restored, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "tracked.py\n"
+    expected = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source)
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=restored) == expected
+
+
 def test_ci_venv_link_is_ignored_just_like_a_local_venv_directory(tmp_path):
     root = Path(__file__).resolve().parents[1]
     (tmp_path / ".gitignore").write_text((root / ".gitignore").read_text())

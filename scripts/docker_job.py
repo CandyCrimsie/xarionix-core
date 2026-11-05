@@ -132,17 +132,31 @@ def archive_source(destination: BinaryIO, *, publish: bool = False) -> None:
     git = ROOT / ".git"
     if not git.is_dir() or git.is_symlink():
         raise ValueError("CI source transfer requires a regular .git directory")
+    directories = {git}
     for name in ("HEAD", "index", "shallow", "packed-refs", "objects", "refs"):
         source = git / name
         if source.is_dir():
-            files.extend(path for path in source.rglob("*") if not path.is_dir())
+            # A detached GitLab checkout may keep every ref packed. Git still
+            # requires the empty refs/objects directories to recognize the repo.
+            directories.add(source)
+            for path in source.rglob("*"):
+                if path.is_symlink():
+                    raise ValueError("Refusing a symlink in CI Git metadata")
+                if path.is_dir():
+                    directories.add(path)
+                else:
+                    files.append(path)
         elif source.exists():
             files.append(source)
     if publish:
         files.extend(ROOT / "dist" / name for name in sorted(DIST))
     with tarfile.open(fileobj=destination, mode="w") as archive:
-        for source in files:
-            if source.is_symlink() or not source.resolve().is_relative_to(ROOT) or not source.is_file():
+        for source in [*sorted(directories), *files]:
+            if (
+                source.is_symlink()
+                or not source.resolve().is_relative_to(ROOT)
+                or not (source.is_file() or source in directories)
+            ):
                 raise ValueError("Refusing a missing file, symlink or path outside the CI checkout")
             name = source.relative_to(ROOT).as_posix()
             leaf = source.name
@@ -155,8 +169,11 @@ def archive_source(destination: BinaryIO, *, publish: bool = False) -> None:
             info = archive.gettarinfo(str(source), arcname=name)
             info.uid = info.gid = 0  # uid 0 INSIDE the rootless daemon's user namespace.
             info.uname = info.gname = ""
-            with source.open("rb") as content:
-                archive.addfile(info, content)
+            if source in directories:
+                archive.addfile(info)
+            else:
+                with source.open("rb") as content:
+                    archive.addfile(info, content)
         # .git/config and reflogs can contain CI_JOB_TOKEN in the clone URL. Never transfer them.
         config = b"[core]\nrepositoryformatversion = 0\nbare = false\n"
         info = tarfile.TarInfo(".git/config")

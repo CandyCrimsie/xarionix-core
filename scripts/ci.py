@@ -295,6 +295,44 @@ def trivy(image: str, report: str = "trivy-image.json") -> None:
 def secrets_check() -> None:
     reports = ROOT / "reports"
     reports.mkdir(exist_ok=True)
+    for name in ("gitleaks.json", "gitleaks-working-tree.json"):
+        (reports / name).unlink(missing_ok=True)
+
+    # Gitleaks must not interpret a broken/empty transfer as an empty clean history.
+    # Validate locally before starting either scanner; never fall back to dir-only.
+    try:
+        repository = (
+            subprocess.check_output(  # nosec B603 B607
+                ["git", "rev-parse", "--is-inside-work-tree", "--is-shallow-repository"],
+                cwd=ROOT,
+                stderr=subprocess.PIPE,
+            )
+            .decode()
+            .splitlines()
+        )
+        subprocess.check_output(  # nosec B603 B607
+            ["git", "rev-parse", "--verify", "HEAD^{commit}"],
+            cwd=ROOT,
+            stderr=subprocess.PIPE,
+        )
+        subprocess.run(  # nosec B603 B607
+            ["git", "rev-list", "--objects", "--all", "--missing=error", "--no-object-names"],
+            cwd=ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        listing = subprocess.check_output(  # nosec B603 B607
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            cwd=ROOT,
+            stderr=subprocess.PIPE,
+        )
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        raise RuntimeError(
+            "Secret scan requires a valid Git checkout with commit history; verify CI source transfer"
+        ) from None
+    if repository != ["true", "false"]:
+        raise RuntimeError("Secret scan requires a complete non-bare Git checkout; set GIT_DEPTH=0")
 
     # Full Git history plus current tracked/untracked source are scanned separately. Never scan ignored .env.
     def scan(source: Path, mode: str, report: str) -> None:
@@ -330,9 +368,6 @@ def secrets_check() -> None:
         )
 
     scan(ROOT, "git", "gitleaks.json")
-    listing = subprocess.check_output(
-        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd=ROOT
-    )  # nosec B603 B607
     with tempfile.TemporaryDirectory(prefix="source-scan-", dir=ROOT / ".ci-tmp") as temporary:
         for filename in listing.decode().strip("\0").split("\0"):
             source = ROOT / filename

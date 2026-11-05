@@ -1,5 +1,18 @@
 # GitLab CI/CD и проверки Docker — Sprint 1.1
 
+## Secret scan: detached checkout и packed refs
+
+GitLab job может иметь detached HEAD и хранить все refs в `packed-refs`. Пустые
+`.git/refs` и `.git/objects` всё равно нужны Git: source/history transfer сохраняет
+их как directory entries, включая пустые подкаталоги. Перенос только файлов приводил
+к `fatal: not a git repository` внутри rootless controller.
+
+Перед Gitleaks проверяются обычный non-bare checkout, наличие HEAD commit,
+полнота history (`GIT_DEPTH=0`) и доступность reachable objects. Неполный/повреждённый
+репозиторий останавливает job до сканирования; stale reports удаляются. Затем по-прежнему
+проверяются вся Git history и неигнорируемый working tree с `--redact=100` и без сети.
+Clone config/reflogs/hooks/credentials не переносятся; scanner rules не отключаются.
+
 ## Gateway gates Sprint 6A
 
 `module-gateway:unit` и `module-gateway:security` запускают contract/relay/IPC/JWT
