@@ -376,14 +376,25 @@ make integration-test
 
 Compose project `xarionix-test-<pipeline>-<job>-<random>` имеет собственные volumes, networks, loopback ports, случайные credentials и отдельный test-only service-account client. Production realm templates не включают этот client/grant. В ответах pytest credentials fixture скрыты.
 
-Fixture cleanup удаляет **только свой случайный project**. В `finally` controller дополнительно проверяет job label и prefix test project перед удалением оставшихся test containers/networks/volumes; без числового `CI_JOB_ID` этот cleanup отказывается работать. При жёстком прерывании Runner удаляет одноразовый DinD service целиком. Cleanup не обращается к `xarionix-core`/`xarionix-core-dev` и не выполняет глобальные prune.
+Fixture cleanup удаляет **только свой случайный project** и образ `xarionix-core-test` с тегом этого project. Образ собирается один раз, затем Compose запускает его с `--no-build`. В `finally` controller дополнительно проверяет job label и prefix test project перед удалением оставшихся test containers/networks/volumes; без числового `CI_JOB_ID` этот cleanup отказывается работать. При жёстком прерывании Runner удаляет одноразовый DinD service целиком. Native jobs хранят временные файлы pytest в отдельном каталоге `.ci-tmp/native-<CI_JOB_ID>` и удаляют его в `after_script`.
 
 `reports/integration-diagnostics.json` содержит до 20 записей об ошибках: случайный test project,
 фазу команды, статическую категорию, exit code, номер попытки/решение о retry и
-Service/State/Health/ExitCode контейнеров. Даже если build упал до их создания, фаза и причина
+Service/State/Health/ExitCode контейнеров. При сбое Keycloak в поле `keycloak_error_kind`
+сохраняется только фиксированная категория из его журнала. Даже если build упал до их создания, фаза и причина
 не теряются в пустом `[]`. Не публикуются raw stdout/stderr, argv, `.env`, JWT, passwords,
 Docker Env и realm secrets. Категория `unclassified` означает, что точную причину необходимо
 воспроизвести в собственной изолированной среде; это не доказательство сетевого сбоя.
+
+### Нехватка места у PostgreSQL Keycloak
+
+Если Keycloak завершается с кодом 1 после успешных миграций Core и диагностика показывает
+`disk_full`, проверьте свободное место на VM через `df -h` для Docker data root,
+containerd и домашнего каталога native runner. В pipeline №67 PostgreSQL Keycloak вернул
+`No space left on device`, хотя его healthcheck ещё показывал готовность. Оба тестовых
+Docker-движка делили системный раздел VM. После завершения заданий удаляйте только
+идентифицированные временные каталоги и образы соответствующих тестов. Для стабильных
+запусков учитывайте место для одновременного хранения образов, build cache и БД.
 
 ### Ошибка сборки до запуска стека (job 171)
 

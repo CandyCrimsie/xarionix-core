@@ -85,6 +85,7 @@ def stack(tmp_path_factory):
     if not all(value == "local" or value.isdecimal() for value in (job, pipeline)):
         pytest.fail("Invalid CI project isolation identifiers")
     project = f"xarionix-test-{pipeline}-{job}-" + uuid.uuid4().hex[:8]
+    image = "xarionix-core-test:" + project
     core_port, keycloak_port, postgres_port = free_port(), free_port(), free_port()
     issuer = f"http://localhost:{keycloak_port}/realms/xarionix"
     config = setup.DEFAULTS | {key: secrets.token_hex(32) for key in setup.SECRETS}
@@ -206,7 +207,7 @@ def stack(tmp_path_factory):
     definition = yaml.safe_load((ROOT / "compose.dev.yaml").read_text())
     services = definition["services"]
     for name in ("core", "migrate"):
-        services[name]["image"] = "xarionix-core-test:" + project
+        services[name]["image"] = image
         if name == "core":
             services[name]["build"] = str(ROOT)
         services[name]["environment"] = dict(services[name]["environment"]) | {
@@ -242,6 +243,15 @@ def stack(tmp_path_factory):
         key: value for key, value in os.environ.items() if not key.startswith(("XARIONIX_", "COMPOSE_"))
     }
 
+    def service_logs(name):
+        result = subprocess.run(
+            command + ["logs", "--no-color", "--tail", "200", name],
+            env=environment,
+            capture_output=True,
+            timeout=20,
+        )
+        return result.stdout + result.stderr
+
     def record_failure(arguments, kind, returncode, attempt, retry):
         # Static categories and Docker status fields only. Never persist raw stderr,
         # expanded Compose config, argv values, tokens or disposable credentials.
@@ -252,6 +262,7 @@ def stack(tmp_path_factory):
         )
         safe = []
         migration_error = None
+        keycloak_error = None
         try:
             status = subprocess.run(
                 command + ["ps", "--all", "--format", "json"],
@@ -268,45 +279,57 @@ def stack(tmp_path_factory):
             safe = [
                 {key: item.get(key) for key in ("Service", "State", "Health", "ExitCode")} for item in items
             ]
-            if any(item.get("Service") == "migrate" and item.get("ExitCode") for item in safe):
-                migration_logs = subprocess.run(
-                    command + ["logs", "--no-color", "--tail", "200", "migrate"],
-                    env=environment,
-                    capture_output=True,
-                    timeout=20,
-                )
-                match = re.search(
-                    rb"psycopg\.(?:errors\.)?([A-Z][A-Za-z]{1,63})",
-                    migration_logs.stdout + migration_logs.stderr,
-                )
-                migration_error = match.group(1).decode() if match else "unclassified"
         except (OSError, subprocess.TimeoutExpired, ValueError, TypeError, AttributeError):
             pass
-        reports = ROOT / "reports"
-        reports.mkdir(exist_ok=True)
-        path = reports / "integration-diagnostics.json"
         try:
-            history = json.loads(path.read_text()) if path.exists() else []
-            history = [item for item in history if isinstance(item, dict) and "phase" in item]
-        except (ValueError, TypeError):
-            history = []
-        history.append(
-            {
-                "project": project,
-                "phase": phase,
-                "kind": kind,
-                "returncode": returncode,
-                "attempt": attempt,
-                "retry_planned": retry,
-                "services": safe,
-                "migration_error_class": migration_error,
-            }
-        )
-        path.write_text(json.dumps(history[-20:]))
+            if any(item["Service"] == "migrate" and item["ExitCode"] for item in safe):
+                match = re.search(
+                    rb"psycopg\.(?:errors\.)?([A-Z][A-Za-z]{1,63})",
+                    service_logs("migrate"),
+                )
+                migration_error = match.group(1).decode() if match else "unclassified"
+        except (OSError, subprocess.TimeoutExpired):
+            migration_error = "logs_unavailable"
+        try:
+            if any(
+                item["Service"] == "keycloak"
+                and (item["ExitCode"] or (phase == "up" and item["Health"] != "healthy"))
+                for item in safe
+            ):
+                keycloak_error = compose_failure_kind(service_logs("keycloak"))
+        except (OSError, subprocess.TimeoutExpired):
+            keycloak_error = "logs_unavailable"
         print(
-            f"Isolated stack phase={phase} kind={kind} exit={returncode} attempt={attempt} retry={retry} migration_error_class={migration_error}",
+            f"Isolated stack phase={phase} kind={kind} exit={returncode} attempt={attempt} retry={retry} "
+            f"migration_error_class={migration_error} keycloak_error_kind={keycloak_error}",
             flush=True,
         )
+        reports = ROOT / "reports"
+        path = reports / "integration-diagnostics.json"
+        try:
+            reports.mkdir(exist_ok=True)
+            try:
+                history = json.loads(path.read_text()) if path.exists() else []
+                history = [item for item in history if isinstance(item, dict) and "phase" in item]
+            except (ValueError, TypeError):
+                history = []
+            history.append(
+                {
+                    "project": project,
+                    "phase": phase,
+                    "kind": kind,
+                    "returncode": returncode,
+                    "attempt": attempt,
+                    "retry_planned": retry,
+                    "services": safe,
+                    "migration_error_class": migration_error,
+                    "keycloak_error_kind": keycloak_error,
+                }
+            )
+            path.write_text(json.dumps(history[-20:]))
+        except OSError:
+            print("Could not write integration-diagnostics.json; see the stack status above", flush=True)
+        return keycloak_error
 
     def execute(arguments, timeout=600, extra_environment=None):
         if extra_environment and set(extra_environment) - {
@@ -337,16 +360,19 @@ def stack(tmp_path_factory):
                 return result.stdout
             kind = compose_failure_kind(result.stdout + result.stderr)
             retry = retry_compose_build(arguments, kind, attempt)
-            record_failure(arguments, kind, result.returncode, attempt, retry)
+            keycloak_error = record_failure(arguments, kind, result.returncode, attempt, retry)
             if not retry:
+                cause = f", keycloak={keycloak_error}" if keycloak_error else ""
                 pytest.fail(
-                    f"Isolated stack {arguments[0]} failed ({kind}, exit {result.returncode}); see reports/integration-diagnostics.json"
+                    f"Isolated stack {arguments[0]} failed ({kind}, exit {result.returncode}{cause}); see reports/integration-diagnostics.json"
                 )
             time.sleep(2)
 
+    image_built = False
     try:
         execute(["config", "-q"])
         execute(["build", "core"], timeout=1200)
+        image_built = True
         execute(["up", "-d", "postgres", "--wait", "--wait-timeout", "120"])
         execute(["run", "--rm", "migrate", "alembic", "upgrade", "0001_identity"])
         legacy_id = uuid.uuid4()
@@ -428,7 +454,7 @@ def stack(tmp_path_factory):
             for revision in ("0002_platform", "0003_locking"):
                 execute(["run", "--rm", "migrate", "alembic", "upgrade", revision])
                 run(benchmark_connection, revision, ROOT / "reports" / f"benchmark-{revision}.json")
-        execute(["up", "-d", "--build", "--wait", "--wait-timeout", "420"], timeout=1500)
+        execute(["up", "-d", "--no-build", "--wait", "--wait-timeout", "420"], timeout=1500)
         yield IsolatedStack(
             {
                 "config": config,
@@ -442,7 +468,7 @@ def stack(tmp_path_factory):
                 "authentication_clients": {},
                 "module_secrets": module_secrets,
                 "agent_network": project + "_agent",
-                "image": "xarionix-core-test:" + project,
+                "image": image,
             }
         )
     finally:
@@ -455,6 +481,12 @@ def stack(tmp_path_factory):
         )
         if cleanup.returncode:
             pytest.fail("Failed to clean isolated test project; no unrelated resources were removed")
+        if image_built:
+            cleanup = subprocess.run(
+                ["docker", "image", "rm", image], env=environment, capture_output=True, timeout=120
+            )
+            if cleanup.returncode:
+                pytest.fail("Failed to remove the isolated test image")
 
 
 def token(stack, client_id="integration-only", *, authentication_time=None):

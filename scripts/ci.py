@@ -38,7 +38,19 @@ def compose_failure_kind(output: bytes) -> str:
             ),
         ),
         ("disk_full", ("no space left on device",)),
-        ("out_of_memory", ("cannot allocate memory", "out of memory", "exit code: 137")),
+        ("thread_limit", ("unable to create native thread", "pthread_create failed (eagain)")),
+        ("out_of_memory", ("cannot allocate memory", "out of memory", "outofmemoryerror", "exit code: 137")),
+        ("filesystem_permissions", ("permission denied", "read-only file system", "accessdeniedexception")),
+        ("database_authentication", ("password authentication failed", "no pg_hba.conf entry")),
+        (
+            "database_connection",
+            (
+                "failed to obtain jdbc connection",
+                "unable to acquire jdbc connection",
+                "org.postgresql.util.psqlexception: connection",
+            ),
+        ),
+        ("realm_import", ("failed to import realm", "error importing realm")),
         (
             "network_timeout",
             (

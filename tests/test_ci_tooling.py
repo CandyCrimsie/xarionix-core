@@ -3,6 +3,7 @@ import json
 import re
 import subprocess
 import tomllib
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -129,6 +130,11 @@ def test_docker_runner_preflight_fails_explicitly_not_as_a_skipped_success(monke
         (b"certificate verify failed; ReadTimeoutError", "tls_verification"),
         (b"No space left on device; Read timed out", "disk_full"),
         (b"Cannot allocate memory", "out_of_memory"),
+        (b"java.lang.OutOfMemoryError: unable to create native thread", "thread_limit"),
+        (b"Read-only file system", "filesystem_permissions"),
+        (b"Unable to acquire JDBC connection: password authentication failed", "database_authentication"),
+        (b"Failed to obtain JDBC connection", "database_connection"),
+        (b"Error importing realm from file", "realm_import"),
         (b"No matching distribution found", "dependency_resolution"),
         (b"compiler failed with a private URL/token that must not be echoed", "unclassified"),
     ],
@@ -216,6 +222,61 @@ def test_stack_build_failure_is_diagnosed_even_without_containers_and_never_beco
     )
     assert entries[-1]["retry_planned"] is False
     assert "private-credential-never-log" not in report + capsys.readouterr().out
+
+
+def test_stack_keycloak_failure_reports_category_without_publishing_container_logs(
+    tmp_path, tmp_path_factory, monkeypatch, capsys
+):
+    from integration import test_managed_stack as managed
+
+    monkeypatch.setattr(managed, "ROOT", tmp_path)
+    monkeypatch.setattr(managed, "preflight", lambda: None)
+    monkeypatch.setattr(managed, "stage_bootstrap_script", lambda folder: folder / "bootstrap.sh")
+    monkeypatch.setenv("XARIONIX_RUN_DOCKER_TESTS", "1")
+    monkeypatch.delenv("XARIONIX_RUN_LOCK_BENCHMARKS", raising=False)
+    (tmp_path / "compose.dev.yaml").write_text((ROOT / "compose.dev.yaml").read_text())
+
+    class Database:
+        def execute(self, *args):
+            pass
+
+    db = Database()
+    monkeypatch.setattr(managed.psycopg, "connect", lambda **kwargs: nullcontext(db))
+    removed_images = []
+
+    def execute(arguments, **kwargs):
+        if arguments[:3] == ["docker", "image", "rm"]:
+            removed_images.extend(arguments[3:])
+            return subprocess.CompletedProcess(arguments, 0, b"")
+        operation = arguments[arguments.index("-f") + 2 :]
+        if operation[0] == "up" and "postgres" not in operation:
+            assert "--no-build" in operation
+            return subprocess.CompletedProcess(arguments, 1, b"", b"dependency failed to start")
+        if operation[0] == "ps":
+            return subprocess.CompletedProcess(
+                arguments, 0, b'{"Service":"keycloak","State":"running","Health":"starting","ExitCode":0}\n'
+            )
+        if operation[0] == "logs":
+            assert operation == ["logs", "--no-color", "--tail", "200", "keycloak"]
+            return subprocess.CompletedProcess(
+                arguments,
+                0,
+                b"FATAL: could not write init file: No space left on device; private-credential-never-log",
+                b"",
+            )
+        return subprocess.CompletedProcess(arguments, 0, b"")
+
+    monkeypatch.setattr(managed.subprocess, "run", execute)
+    fixture = managed.stack.__wrapped__(tmp_path_factory)
+    with pytest.raises(pytest.fail.Exception, match="Isolated stack up failed .*keycloak=disk_full"):
+        next(fixture)
+    report = (tmp_path / "reports/integration-diagnostics.json").read_text()
+    captured = capsys.readouterr()
+    diagnostic = json.loads(report)[0]
+    assert removed_images == ["xarionix-core-test:" + diagnostic["project"]]
+    assert diagnostic["keycloak_error_kind"] == "disk_full"
+    assert "keycloak_error_kind=disk_full" in captured.out
+    assert "private-credential-never-log" not in report + captured.out + captured.err
 
 
 @pytest.mark.parametrize("finding_report", [False, True])
@@ -308,6 +369,14 @@ def test_native_runtime_ci_is_a_required_separate_serialized_real_engine_gate():
     assert "extends" not in native  # No implicit Docker executor/socket configuration.
     assert native["artifacts"]["reports"]["junit"] == "reports/runtime-e2e.xml"
     assert "reports/integration-diagnostics.json" in native["artifacts"]["paths"]
+
+
+def test_native_runtime_jobs_clean_only_their_own_pytest_directory():
+    config = validate.load_yaml(ROOT / ".gitlab-ci.yml")
+    for job in ("integration:runtime-e2e", "module-gateway:runtime-e2e", "module-storage:runtime-e2e"):
+        assert config[job]["script"][-2] == "mkdir -p .ci-tmp"
+        assert '--basetemp=".ci-tmp/native-${CI_JOB_ID:?}"' in config[job]["script"][-1]
+        assert config[job]["after_script"] == ['rm -rf -- ".ci-tmp/native-${CI_JOB_ID:?}"']
 
 
 def test_native_private_checkout_stages_only_public_bootstrap_script(tmp_path, monkeypatch):

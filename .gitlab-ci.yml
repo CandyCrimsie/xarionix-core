@@ -184,7 +184,10 @@ integration:runtime-e2e:
     - python3 -m venv .venv
     - .venv/bin/python -m pip install -r requirements-dev.lock
     - .venv/bin/python -m pip install --no-deps -e .
-    - .venv/bin/python -m pytest tests/integration/test_runtime_e2e.py -vv -s --junitxml=reports/runtime-e2e.xml
+    - mkdir -p .ci-tmp
+    - .venv/bin/python -m pytest tests/integration/test_runtime_e2e.py -vv -s --basetemp=".ci-tmp/native-${CI_JOB_ID:?}" --junitxml=reports/runtime-e2e.xml
+  after_script: &native_pytest_cleanup
+    - rm -rf -- ".ci-tmp/native-${CI_JOB_ID:?}"
   artifacts:
     when: always
     expire_in: 14 days
@@ -226,7 +229,9 @@ module-gateway:runtime-e2e:
     - python3 -m venv .venv
     - .venv/bin/python -m pip install -r requirements-dev.lock
     - .venv/bin/python -m pip install --no-deps -e .
-    - .venv/bin/python -m pytest tests/integration/test_module_gateway_e2e.py -vv --junitxml=reports/gateway-e2e.xml
+    - mkdir -p .ci-tmp
+    - .venv/bin/python -m pytest tests/integration/test_module_gateway_e2e.py -vv --basetemp=".ci-tmp/native-${CI_JOB_ID:?}" --junitxml=reports/gateway-e2e.xml
+  after_script: *native_pytest_cleanup
   artifacts:
     when: always
     expire_in: 14 days
@@ -250,7 +255,9 @@ module-storage:runtime-e2e:
     - python3 -m venv .venv
     - .venv/bin/python -m pip install -r requirements-dev.lock
     - .venv/bin/python -m pip install --no-deps -e .
-    - .venv/bin/python -m pytest tests/integration/test_stateful_runtime_e2e.py -vv --junitxml=reports/stateful-e2e.xml
+    - mkdir -p .ci-tmp
+    - .venv/bin/python -m pytest tests/integration/test_stateful_runtime_e2e.py -vv --basetemp=".ci-tmp/native-${CI_JOB_ID:?}" --junitxml=reports/stateful-e2e.xml
+  after_script: *native_pytest_cleanup
   artifacts:
     when: always
     expire_in: 14 days
