@@ -27,6 +27,8 @@ deploy/generated
 backups
 tests
 .pytest_cache
+# Disposable native fixtures can contain realm secrets and SQLite snapshots.
+.pytest-*
 .mypy_cache
 .ruff_cache
 dist

@@ -35,12 +35,58 @@ from app.domains.deployments.model import (
     RuntimeDeployment,
 )
 from app.domains.installations import service as installations
+from app.domains.module_sdk.model import ModuleDataBackup, ModuleStorageAllocation
 from app.domains.modules.authorization import MachineContext
 from app.domains.packages.archive import Limits, verify
 from app.domains.packages.storage import Storage
 from app.domains.packages.work import file_work
 
 router = APIRouter(prefix="/api/v1", tags=["deployment"])
+
+
+@router.get("/platform/runtime-deployments/{installation_id}/storage")
+async def storage_detail(
+    installation_id: UUID, ctx: Ctx, limit: Limit = 20, offset: Offset = 0
+) -> dict[str, Any]:
+    await require_platform(ctx, serialize=False)
+    await installations.installation(ctx, installation_id)
+    value = await ctx.session.get(ModuleStorageAllocation, installation_id)
+    if value is None:
+        return {"allocation": None, "items": [], "limit": limit, "offset": offset}
+    backups = (
+        await ctx.session.scalars(
+            select(ModuleDataBackup)
+            .where(ModuleDataBackup.installation_id == installation_id)
+            .order_by(ModuleDataBackup.created_at.desc(), ModuleDataBackup.id)
+            .limit(limit)
+            .offset(offset)
+        )
+    ).all()
+    return {
+        "allocation": {
+            "installation_id": installation_id,
+            "host_id": value.host_id,
+            "epoch_id": value.epoch_id,
+            "revision": value.revision,
+            "data_schema_version": value.data_schema_version,
+            "maximum_bytes": value.maximum_bytes,
+            "retained_epoch_count": len(value.retained_epochs),
+            "deletion_supported": False,
+        },
+        "items": [
+            {
+                "id": b.id,
+                "data_schema_version": b.data_schema_version,
+                "sha256": b.sha256,
+                "size": b.size,
+                "package_version": b.package_version,
+                "created_at": b.created_at,
+            }
+            for b in backups
+        ],
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 async def deployment_context(
@@ -147,7 +193,7 @@ async def prepare(payload: PlanCreate, request: Request, claims: Claims) -> dict
         await require_platform(ctx, serialize=False)
         installation = await installations.installation(ctx, payload.installation_id)
         package = await installations.package(ctx, installation.package_id)
-        if payload.operation in SAFETY:
+        if payload.operation in {*SAFETY, "backup"}:
             latest = await ctx.session.scalar(
                 select(DeploymentJob)
                 .where(DeploymentJob.installation_id == installation.id)

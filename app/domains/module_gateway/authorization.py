@@ -84,7 +84,7 @@ async def authorize(
         runtime = await session.get(RuntimeDeployment, installation.id)
         if (
             runtime is None
-            or runtime.profile != "module-api-private-v1"
+            or runtime.profile not in {"module-api-private-v1", "module-api-stateful-v1"}
             or runtime.package_id != package.id
             or runtime.desired != "running"
             or runtime.generation != runtime.observed_generation

@@ -509,3 +509,32 @@ make docker-build
 ## Безопасные обновления
 
 Обновляйте версии и digests по официальным registries, затем dev lock/runtime lock и package metadata согласованно. Запускайте весь `make check`, integration, build и Trivy; сохраняйте проверяемые результаты. Не заменяйте pinned images на `latest`, не используйте `allow_failure` и `--ignore-unfixed` для зелёного pipeline. Смена major PostgreSQL требует отдельной DB upgrade/restore процедуры. Перед обновлением существующей установки сделайте backups; `.env`, volumes и realm не перегенерируются ради тестов.
+
+## Sprint 6B: SDK и persistent runtime
+
+`test:sdk-wheel` собирает отдельный first-party wheel и импортирует его с Python
+`-I`, исключая подмену editable Core путями. Unit coverage включает SDK и сохраняет
+70% gate. Ruff/MyPy/Bandit проверяют `sdk/python/src`; security image job дополнен
+stateful Hello и отдельным Trivy report. Прежние jobs и проверки не удалены.
+
+Обязательный `module-storage:runtime-e2e` выполняется после существующих native
+runtime/Gateway jobs на **том же** теге `runtime-rootless`. Runner registrations
+и host configuration не меняются. Нужны два разных native rootless engine,
+пустой выделенный runtime engine, cgroup v2 delegation и установленный
+`XARIONIX_RUNTIME_ENGINE_SOCKET`. Docker Desktop/DinD не подменяют этот gate.
+При отсутствии runner job остаётся pending, при неправильных limits/socket — failed.
+
+```bash
+make sdk-test
+XARIONIX_RUNTIME_ENGINE_SOCKET=/absolute/private/runtime.sock make stateful-integration-test
+```
+
+E2E создаёт disposable Core/PostgreSQL/Keycloak stack, подписывает реальные OCI
+версии SDK-модуля, работает через Gateway от пользователей двух компаний,
+проверяет restart/update/migration/backup/restore и retained uninstall. Уборка
+ограничена UUID/labels данного запуска; global prune и dev volumes не используются.
+Содержимое бизнес-баз и приватные ключи не публикуются как artifacts.
+
+Web CI отдельно требует `CONSOLE_CORE_REF` с проверенным полным SHA Core 6B после
+ручного commit/push. Это не новый credential. Старый 6A baseline не содержит
+новых storage API. GitLab pipeline этих незакоммиченных изменений не запускался.

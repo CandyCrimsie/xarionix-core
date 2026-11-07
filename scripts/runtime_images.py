@@ -13,17 +13,23 @@ def check(*, scan: bool = True) -> None:
     suffix = uuid.uuid4().hex[:12]
     agent, hello = "xarionix-deployment-agent:test-" + suffix, "xarionix-hello:test-" + suffix
     gateway, business = "xarionix-gateway-agent:test-" + suffix, "xarionix-hello-business:test-" + suffix
+    stateful = "xarionix-stateful-business:test-" + suffix
     name = "xarionix-runtime-smoke-" + suffix
     try:
         docker(["build", "--target", "deployment-agent", "--tag", agent, "."], timeout=1200)
         docker(["build", "--tag", hello, "examples/modules/hello-runtime"], timeout=600)
         docker(["build", "--target", "gateway-agent", "--tag", gateway, "."], timeout=1200)
         docker(["build", "--tag", business, "examples/modules/hello-business"], timeout=600)
+        docker(
+            ["build", "-f", "examples/modules/hello-business-stateful/Dockerfile", "--tag", stateful, "."],
+            timeout=600,
+        )
         for image, user in (
             (agent, "1000:1000"),
             (hello, "10001:10001"),
             (gateway, "1000:1000"),
             (business, "10001:10001"),
+            (stateful, "10001:10001"),
         ):
             config = json.loads(docker(["image", "inspect", image]).stdout)[0]["Config"]
             if config["User"] != user or config.get("Volumes"):
@@ -90,13 +96,14 @@ def check(*, scan: bool = True) -> None:
             ci.trivy(hello, "trivy-runtime.json")
             ci.trivy(gateway, "trivy-gateway-agent.json")
             ci.trivy(business, "trivy-business-runtime.json")
+            ci.trivy(stateful, "trivy-stateful-runtime.json")
         print("Separate Deployment Agent and Hello image smoke gates passed (no registry push)")
     finally:
         try:
             docker(["rm", "--force", name])
         except RuntimeError:
             pass
-        for image in (agent, hello, gateway, business):
+        for image in (agent, hello, gateway, business, stateful):
             try:
                 docker(["image", "rm", image])
             except RuntimeError:

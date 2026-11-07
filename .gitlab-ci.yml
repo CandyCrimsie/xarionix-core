@@ -71,11 +71,19 @@ lint:python-shell:
   extends: .python
   stage: lint
   script:
-    - .venv/bin/ruff check app scripts tests migrations
-    - .venv/bin/ruff format --check app scripts tests migrations
+    - .venv/bin/ruff check app scripts tests migrations sdk/python/src
+    - .venv/bin/ruff format --check app scripts tests migrations sdk/python/src
     - .venv/bin/mypy app scripts migrations
+    - .venv/bin/mypy sdk/python/src
     - bash -n install.sh
     - sh -n deploy/postgres/10-app-user.sh
+
+test:sdk-wheel:
+  extends: .python
+  stage: test
+  script:
+    - .venv/bin/python -m pip wheel --no-deps sdk/python --wheel-dir dist/sdk
+    - .venv/bin/python -I scripts/sdk_wheel_smoke.py dist/sdk/xarionix_sdk-0.1.0-py3-none-any.whl
 
 test:unit:
   # Includes offline XPKG signature vectors, malicious archives and CLI regressions.
@@ -83,7 +91,7 @@ test:unit:
   stage: test
   script:
     - mkdir -p reports
-    - .venv/bin/pytest -vv -m "not integration" --junitxml=reports/unit.xml --cov=app --cov=scripts --cov-report=term-missing --cov-report=xml:reports/coverage.xml --cov-fail-under=70
+    - .venv/bin/pytest -vv -m "not integration" --junitxml=reports/unit.xml --cov=app --cov=scripts --cov=xarionix_sdk --cov-report=term-missing --cov-report=xml:reports/coverage.xml --cov-fail-under=70
   coverage: '/TOTAL\s+\d+\s+\d+\s+(\d+(?:\.\d+)?%)/'
   artifacts:
     when: always
@@ -115,7 +123,7 @@ security:python:
   extends: .python
   stage: security
   script:
-    - .venv/bin/bandit -q -r app scripts
+    - .venv/bin/bandit -q -r app scripts sdk/python/src
     - .venv/bin/pip-audit -r requirements.lock --strict --timeout 60 --progress-spinner off
     - .venv/bin/pip-audit -r requirements-dev.lock --strict --timeout 60 --progress-spinner off
 
@@ -153,7 +161,7 @@ security:runtime-images:
   artifacts:
     when: always
     expire_in: 7 days
-    paths: [reports/trivy-agent.json, reports/trivy-runtime.json, reports/trivy-gateway-agent.json, reports/trivy-business-runtime.json]
+    paths: [reports/trivy-agent.json, reports/trivy-runtime.json, reports/trivy-gateway-agent.json, reports/trivy-business-runtime.json, reports/trivy-stateful-runtime.json]
 
 # Native Linux shell executor, dedicated unprivileged account, TWO separate
 # rootless daemons. Never bind a VM/system Docker socket into a Docker job.
@@ -225,6 +233,30 @@ module-gateway:runtime-e2e:
     paths: [reports/gateway-e2e.xml, reports/gateway-benchmark.json, reports/integration-diagnostics.json]
     reports:
       junit: reports/gateway-e2e.xml
+
+module-storage:runtime-e2e:
+  stage: integration
+  tags: [runtime-rootless]
+  rules: *full_rules
+  needs:
+    - job: module-gateway:runtime-e2e
+      artifacts: false
+  timeout: 45 minutes
+  variables:
+    XARIONIX_RUN_DOCKER_TESTS: "1"
+    XARIONIX_RUN_STATEFUL_TESTS: "1"
+  script:
+    - test -n "$XARIONIX_RUNTIME_ENGINE_SOCKET" || { echo "Stateful E2E requires the dedicated native rootless runtime socket with cgroup v2 delegation"; exit 1; }
+    - python3 -m venv .venv
+    - .venv/bin/python -m pip install -r requirements-dev.lock
+    - .venv/bin/python -m pip install --no-deps -e .
+    - .venv/bin/python -m pytest tests/integration/test_stateful_runtime_e2e.py -vv --junitxml=reports/stateful-e2e.xml
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths: [reports/stateful-e2e.xml, reports/integration-diagnostics.json]
+    reports:
+      junit: reports/stateful-e2e.xml
 
 build:production:
   extends: .docker

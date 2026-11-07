@@ -1,19 +1,32 @@
 """Narrow Docker API adapter for ONE dedicated, pinned rootless daemon. No shell interface."""
 
+import hashlib
 import json
 import os
+import sqlite3
 import stat
+import tarfile
 import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import httpx
+from xarionix_sdk.storage import StorageError
 
-from app.domains.deployments.contracts import PROFILES, Delivery, RuntimeReport
+from app.domains.deployments.contracts import PROFILES, Delivery, RuntimeReport, StorageReport
 from app.domains.module_gateway.contracts import Dispatch, json_bytes
 from scripts.deployment_agent.ipc import BRIDGE, exchange
+from scripts.deployment_agent.storage import (
+    CONFIG_ENV,
+    CONFIG_LABEL,
+    StorageController,
+    configuration_text,
+    validate_configuration,
+    volume_name,
+)
 
 
 class EngineFailure(Exception):
@@ -43,7 +56,24 @@ print(json.dumps({'interfaces':interfaces,'engine':any(os.path.exists(p) for p i
 """
 
 
+STORAGE_PROBE = """import http.client,json,os,stat
+assert not os.path.islink('/data/storage') and os.path.realpath('/data/storage')=='/data/storage'
+s=os.stat('/data/storage')
+assert s.st_uid==10001 and stat.S_IMODE(s.st_mode)==0o700
+c=http.client.HTTPConnection('127.0.0.1',8080,timeout=2)
+c.request('GET','/_xarionix/storage/v1')
+r=c.getresponse()
+assert r.status==200
+raw=r.read(4097)
+assert len(raw)<=4096
+print(json.dumps(json.loads(raw)))
+c.close()
+"""
+
+
 class Engine:
+    storage_root: Path | None = None
+
     def __init__(self, socket: Path, expected_id: str):
         if (
             not socket.is_absolute()
@@ -63,6 +93,7 @@ class Engine:
         )
         self.expected_id = expected_id
         self.socket = socket
+        self.storage_root: Path | None = None
 
     def close(self) -> None:
         self.client.close()
@@ -76,7 +107,7 @@ class Engine:
         )
         seconds = (context.deadline - datetime.now(UTC)).total_seconds()
         if (
-            job.profile != "module-api-private-v1"
+            job.profile not in {"module-api-private-v1", "module-api-stateful-v1"}
             or not contract
             or not op
             or context.installation_id != job.installation_id
@@ -90,11 +121,21 @@ class Engine:
         ):
             raise EngineFailure("runtime_binding_changed")
         json_bytes(frame.body, limit=min(65536, op.request.max_bytes), depth=frame.json_depth)
+        if job.profile == "module-api-stateful-v1" and (
+            job.storage is None or context.installation_generation != job.installation_generation
+        ):
+            raise EngineFailure("runtime_binding_changed")
         matches = [
             r
             for r in self.owned(job)
             if r.get("Labels", {}).get("io.xarionix.deployment.image") == frame.image_digest
         ]
+        if job.profile == "module-api-stateful-v1":
+            matches = [
+                row
+                for row in matches
+                if (self.inspect(row["Id"]) or {}).get("State", {}).get("Running") is True
+            ]
         if len(matches) != 1:
             raise EngineFailure("runtime_binding_changed")
         identifier = matches[0]["Id"]
@@ -102,6 +143,12 @@ class Engine:
         if not info or not info.get("State", {}).get("Running"):
             raise EngineFailure("module_unavailable")
         self.constraints(info, job)
+        if (
+            job.profile == "module-api-stateful-v1"
+            and validate_configuration(info, self.image(job), job).installation_generation
+            != context.installation_generation
+        ):
+            raise EngineFailure("runtime_binding_changed")
         value = self.call(
             "POST",
             "/containers/" + identifier + "/exec",
@@ -263,7 +310,7 @@ class Engine:
             offset += 8 + size
         return bytes(result)
 
-    def constraints(self, info: dict[str, Any], job: Delivery) -> None:
+    def constraints(self, info: dict[str, Any], job: Delivery, *, epoch: UUID | None = None) -> None:
         config, host = info.get("Config", {}), info.get("HostConfig", {})
         limits = PROFILES[job.profile]
         labels = config.get("Labels", {})
@@ -273,7 +320,10 @@ class Engine:
             or labels.get("io.xarionix.deployment.installation") != str(job.installation_id)
             or info.get("Image") != image["Id"]
             or config.get("User") != "10001:10001"
-            or (config.get("Env") or []) != (image.get("Config", {}).get("Env") or [])
+            or (
+                job.profile != "module-api-stateful-v1"
+                and (config.get("Env") or []) != (image.get("Config", {}).get("Env") or [])
+            )
             or host.get("NetworkMode") != "none"
             or host.get("Privileged") is not False
             or host.get("ReadonlyRootfs") is not True
@@ -282,8 +332,7 @@ class Engine:
             or set(host.get("SecurityOpt", [])) != {"no-new-privileges"}
             or host.get("CgroupnsMode") != "private"
             or host.get("Binds")
-            or host.get("Mounts")
-            or info.get("Mounts")
+            or (job.profile != "module-api-stateful-v1" and (host.get("Mounts") or info.get("Mounts")))
             or host.get("Devices")
             or host.get("DeviceRequests")
             or host.get("PortBindings")
@@ -297,6 +346,18 @@ class Engine:
             or host.get("Tmpfs") != {TMP_PATH: f"rw,noexec,nosuid,nodev,size={limits['tmpfs']}"}
         ):
             raise EngineFailure("isolation_unavailable")
+        if job.profile == "module-api-stateful-v1":
+            if job.storage is None:
+                raise EngineFailure("storage_binding_required")
+            try:
+                validate_configuration(info, image, job)
+                if labels.get("io.xarionix.storage.sdk-sha256") != job.storage.sdk_sha256:
+                    raise StorageError("storage_sdk_binding_changed")
+                StorageController(self, self.storage_root).validate_mounts(
+                    info, job, epoch or job.storage.epoch_id
+                )
+            except (StorageError, ValueError, OSError):
+                raise EngineFailure("isolation_unavailable") from None
         if info.get("State", {}).get("Running"):
             measured = json.loads(self.execute(info["Id"], ISOLATION_PROBE))
             if (
@@ -310,7 +371,7 @@ class Engine:
                 or measured.get("cpu") != f"{limits['cpu_quota']} 100000"
             ):
                 raise EngineFailure("isolation_unavailable")
-            if job.profile == "module-api-private-v1":
+            if job.profile in {"module-api-private-v1", "module-api-stateful-v1"}:
                 network = info.get("NetworkSettings", {})
                 measured_api = json.loads(self.execute(info["Id"], API_ISOLATION_PROBE))
                 if (
@@ -353,8 +414,16 @@ class Engine:
             raise EngineFailure("image_identity_mismatch")
         return image
 
-    def create(self, job: Delivery) -> str:
+    def create(self, job: Delivery, *, epoch: UUID | None = None) -> str:
         limits = PROFILES[job.profile]
+        storage = StorageController(self, self.storage_root)
+        selected = epoch or (job.storage.epoch_id if job.storage else None)
+        if job.profile == "module-api-stateful-v1":
+            if selected is None:
+                raise EngineFailure("storage_binding_required")
+            storage.volume(job, selected, create=True)
+        text = configuration_text(job) if job.profile == "module-api-stateful-v1" else None
+        image = self.image(job)
         name = (
             "xarionix-"
             + job.host_id.hex[:8]
@@ -363,6 +432,8 @@ class Engine:
             + "-"
             + job.runtime.config_digest[7:19]
         )
+        if text is not None and selected is not None:
+            name += "-" + selected.hex[:8] + "-" + str(job.generation)
         value = self.call(
             "POST",
             "/containers/create",
@@ -370,14 +441,25 @@ class Engine:
             json={
                 "Image": self.image(job)["Id"],
                 "User": "10001:10001",
-                "Env": [],
+                "Env": [*(image.get("Config", {}).get("Env") or []), CONFIG_ENV + text]
+                if text is not None
+                else [],
                 "WorkingDir": "/app",
                 "Labels": {
                     "io.xarionix.deployment.host": str(job.host_id),
                     "io.xarionix.deployment.installation": str(job.installation_id),
                     "io.xarionix.deployment.image": job.runtime.image_digest,
+                    **(
+                        {
+                            CONFIG_LABEL: hashlib.sha256(text.encode()).hexdigest(),
+                            "io.xarionix.storage.sdk-sha256": job.storage.sdk_sha256,
+                        }
+                        if text is not None and job.storage
+                        else {}
+                    ),
                 },
                 "HostConfig": {
+                    **({"Mounts": [storage.mount(job, selected)]} if text is not None and selected else {}),
                     "NetworkMode": "none",
                     "ReadonlyRootfs": True,
                     "Privileged": False,
@@ -399,15 +481,195 @@ class Engine:
         )
         if not isinstance(value, dict) or not isinstance(value.get("Id"), str):
             raise EngineFailure("runtime_create_failed")
-        return str(value["Id"])
+        identifier = str(value["Id"])
+        if text is not None and job.operation != "restore":
+            storage.initialize(identifier, job)
+        return identifier
 
     def stop(self, identifier: str) -> None:
         self.call("POST", "/containers/" + identifier + "/stop", params={"t": "10"})
 
+    def stateful_report(self, job: Delivery, *, epoch: UUID | None = None) -> RuntimeReport:
+        if job.storage is None:
+            raise EngineFailure("storage_binding_required")
+        storage = StorageController(self, self.storage_root)
+        selected = epoch or storage.current_epoch(job)
+        report = RuntimeReport(
+            installation_id=job.installation_id,
+            generation=job.generation,
+            image_digest=job.runtime.image_digest,
+            state="not_provisioned",
+            health="unknown",
+        )
+        inspected = [self.inspect(row["Id"]) for row in self.owned(job)]
+        running = [info for info in inspected if info and info.get("State", {}).get("Running") is True]
+        if len(running) > 1:
+            raise EngineFailure("storage_multiple_writers")
+        candidates = [
+            info
+            for info in inspected
+            if info
+            and info.get("Config", {}).get("Labels", {}).get("io.xarionix.deployment.image")
+            == job.runtime.image_digest
+            and any(m.get("Name") == volume_name(job, selected) for m in info.get("Mounts", []))
+        ]
+        if not candidates:
+            return report
+        info = next(
+            (info for info in candidates if info.get("State", {}).get("Running") is True), candidates[0]
+        )
+        self.constraints(info, job, epoch=selected)
+        active = info.get("State", {}).get("Running") is True
+        observed = None
+        healthy = False
+        if active:
+            try:
+                self.execute(info["Id"], HEALTH_PROBE)
+                value = json.loads(self.execute(info["Id"], STORAGE_PROBE))
+                config = validate_configuration(info, self.image(job), job)
+                if (
+                    set(value)
+                    != {"schema_version", "installation_id", "installation_generation", "data_schema_version"}
+                    or value["schema_version"] != 1
+                    or value["installation_id"] != str(job.installation_id)
+                    or value["installation_generation"] != config.installation_generation
+                    or type(value["data_schema_version"]) is not int
+                    or not job.storage.compatible_minimum
+                    <= value["data_schema_version"]
+                    <= job.storage.compatible_maximum
+                ):
+                    raise EngineFailure("storage_schema_incompatible")
+                observed = StorageReport(epoch_id=selected, data_schema_version=value["data_schema_version"])
+                healthy = True
+            except (EngineFailure, StorageError, ValueError, OSError):
+                pass
+        else:
+            observed = storage.inspect(info["Id"], job, selected)
+        return report.model_copy(
+            update={
+                "container_id": info["Id"],
+                "state": "running" if active else "stopped",
+                "health": "healthy" if healthy else "unhealthy" if active else "unknown",
+                "live": healthy,
+                "ready": healthy,
+                "restart_count": info.get("RestartCount", 0),
+                "storage": observed,
+            }
+        )
+
+    def apply_stateful(
+        self, job: Delivery, authorize: Callable[[], None], archive: Path | None
+    ) -> RuntimeReport:
+        if job.storage is None:
+            raise EngineFailure("storage_binding_required")
+        storage = StorageController(self, self.storage_root)
+        rows = self.owned(job)
+        if job.operation == "inspect":
+            authorize()
+            return self.stateful_report(job)
+        if job.operation in {"stop", "quarantine", "retire", "deprovision"}:
+            authorize()
+            for row in rows:
+                self.stop(row["Id"])
+            try:
+                report = self.stateful_report(job)
+            except (EngineFailure, StorageError, sqlite3.DatabaseError, OSError, tarfile.TarError):
+                report = RuntimeReport(
+                    installation_id=job.installation_id,
+                    generation=job.generation,
+                    image_digest=job.runtime.image_digest,
+                    state="stopped",
+                    health="unknown",
+                )
+            if job.operation == "deprovision":
+                for row in rows:
+                    self.call("DELETE", "/containers/" + row["Id"], params={"v": "false", "force": "false"})
+                report = report.model_copy(update={"state": "not_provisioned", "container_id": None})
+            return report
+        self.available(job)
+        if archive:
+            self.load(archive, job)
+        authorize()
+        for row in rows:
+            self.stop(row["Id"])
+        if rows:
+            self.trim_stopped(job, rows[0]["Id"])
+        selected = job.storage.next_epoch_id if job.operation == "restore" else job.storage.epoch_id
+        if job.operation == "restore":
+            storage.backup_metadata(job)
+        candidates = []
+        desired = configuration_text(job)
+        for row in self.owned(job):
+            info = self.inspect(row["Id"])
+            if (
+                info
+                and info.get("Config", {}).get("Labels", {}).get("io.xarionix.deployment.image")
+                == job.runtime.image_digest
+                and CONFIG_ENV + desired in info.get("Config", {}).get("Env", [])
+                and any(m.get("Name") == volume_name(job, selected) for m in info.get("Mounts", []))
+            ):
+                candidates.append(row["Id"])
+        if len(candidates) > 1:
+            raise EngineFailure("storage_runtime_ambiguous")
+        identifier = candidates[0] if candidates else self.create(job, epoch=selected)
+        info = self.inspect(identifier)
+        if info is None:
+            raise EngineFailure("runtime_missing")
+        self.constraints(info, job, epoch=selected)
+        if job.operation == "backup":
+            observed = storage.backup(identifier, job)
+        elif job.operation == "restore":
+            observed = storage.restore(identifier, job)
+        else:
+            observed = storage.inspect(identifier, job, selected)
+            if observed.data_schema_version != job.storage.expected_schema_version:
+                raise StorageError("storage_schema_snapshot_changed")
+            if (
+                observed.data_schema_version > 0
+                and observed.data_schema_version < job.storage.target_schema_version
+            ):
+                storage.validate_migration_backup(job)
+            elif (
+                observed.data_schema_version > 0
+                and not job.storage.compatible_minimum
+                <= observed.data_schema_version
+                <= job.storage.compatible_maximum
+            ):
+                raise StorageError("storage_schema_incompatible")
+        authorize()
+        if job.operation in {"provision", "backup", "restore"}:
+            self.trim_stopped(job, identifier)
+            return RuntimeReport(
+                installation_id=job.installation_id,
+                generation=job.generation,
+                image_digest=job.runtime.image_digest,
+                container_id=identifier,
+                state="stopped",
+                health="unknown",
+                storage=observed,
+            )
+        healthy = False
+        try:
+            self.call("POST", "/containers/" + identifier + "/start")
+            deadline = time.monotonic() + 30
+            while True:
+                report = self.stateful_report(job, epoch=selected)
+                if report.health == "healthy":
+                    authorize()
+                    self.trim_stopped(job, identifier)
+                    healthy = True
+                    return report
+                if time.monotonic() >= deadline:
+                    raise EngineFailure("health_failed")
+                time.sleep(0.25)
+        finally:
+            if not healthy:
+                self.stop(identifier)
+
     def trim_stopped(self, job: Delivery, active_id: str) -> None:
-        # V1 has no persistent mounts. Retain active + one previous stopped
-        # runtime; older rollback is re-imported from the signed CAS. Never prune
-        # globally, force-remove images, or delete user volumes.
+        # Retain active + one previous stopped runtime, always preserving volumes.
+        # Stateful generations can share one image with different approved config;
+        # removing that in-use image is not part of container retirement.
         rows = sorted(
             (r for r in self.owned(job) if r["Id"] != active_id),
             key=lambda r: (r.get("Created", 0), r["Id"]),
@@ -418,9 +680,15 @@ class Engine:
             if info is None or info.get("State", {}).get("Running"):
                 raise EngineFailure("runtime_inventory_invalid")
             self.call("DELETE", "/containers/" + row["Id"], params={"v": "false", "force": "false"})
-            self.call("DELETE", "/images/" + info["Image"], params={"force": "false", "noprune": "true"})
+            if job.profile != "module-api-stateful-v1":
+                self.call("DELETE", "/images/" + info["Image"], params={"force": "false", "noprune": "true"})
 
     def report(self, job: Delivery) -> RuntimeReport:
+        if job.profile == "module-api-stateful-v1":
+            try:
+                return self.stateful_report(job)
+            except (StorageError, sqlite3.DatabaseError, OSError, ValueError, tarfile.TarError):
+                raise EngineFailure("storage_observation_failed") from None
         rows = self.owned(job)
         matching = [
             r
@@ -462,6 +730,11 @@ class Engine:
     def apply(
         self, job: Delivery, authorize: Callable[[], None], archive: Path | None = None
     ) -> RuntimeReport:
+        if job.profile == "module-api-stateful-v1":
+            try:
+                return self.apply_stateful(job, authorize, archive)
+            except (StorageError, sqlite3.DatabaseError, tarfile.TarError, ValueError, OSError):
+                raise EngineFailure("storage_operation_failed") from None
         # Stops/quarantine remain possible even after trust, cgroup support or health is lost.
         rows = self.owned(job)
         if job.operation == "inspect":

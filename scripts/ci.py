@@ -230,6 +230,7 @@ def trivy(image: str, report: str = "trivy-image.json") -> None:
         "trivy-runtime.json",
         "trivy-gateway-agent.json",
         "trivy-business-runtime.json",
+        "trivy-stateful-runtime.json",
     }:
         raise ValueError("Unsupported image security report")
     reports = ROOT / "reports"

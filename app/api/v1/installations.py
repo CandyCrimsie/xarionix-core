@@ -13,12 +13,27 @@ from app.domains.installations.model import (
     ModuleInstallation,
     ModuleInstallationHistory,
     ModuleInstallOperation,
+    ModuleInstallPlan,
 )
 from app.domains.packages.archive import Limits
 from app.domains.packages.storage import Storage
 from app.domains.packages.work import file_work
 
 router = APIRouter(prefix="/api/v1/platform", tags=["module-manager"])
+
+
+@router.get("/module-install-plans")
+async def plans(ctx: Ctx, limit: Limit = 20, offset: Offset = 0) -> dict[str, Any]:
+    await require_platform(ctx, serialize=False)
+    rows = (
+        await ctx.session.scalars(
+            select(ModuleInstallPlan)
+            .order_by(ModuleInstallPlan.created_at.desc(), ModuleInstallPlan.id)
+            .limit(limit)
+            .offset(offset)
+        )
+    ).all()
+    return {"items": [service.plan_view(value) for value in rows], "limit": limit, "offset": offset}
 
 
 @router.post("/module-install-plans", status_code=201)

@@ -1,12 +1,21 @@
 # Xarionix Core
 
+Sprint 6B добавляет [Python Module SDK](docs/module-sdk.md), signed SDK metadata,
+opt-in persistent SQLite profile и отдельные approved backup/restore/migration
+операции. [Разработка](docs/module-sdk-development.md), [storage](docs/module-storage.md),
+[безопасность](docs/module-storage-security.md), [миграции](docs/module-migrations.md),
+[backup/restore](docs/module-backup-restore.md), [конфигурация](docs/module-configuration.md).
+SDK находится в `sdk/python`, рабочий пример — `examples/modules/hello-business-stateful`.
+Gateway URL и серверная RBAC-проверка остаются прежними. Данные при uninstall не удаляются.
+
 Sprint 6A: [company-authorized Module API Gateway](docs/module-api-gateway.md),
 [signed operation contract](docs/module-api-contract.md), отдельный outbound Gateway
 Agent и opt-in [private IPC profile](docs/module-runtime-private-network.md), сохраняющий
 network=none. [Разработка Hello Business](docs/module-gateway-development.md),
 [security](docs/module-gateway-security.md), [recovery](docs/module-gateway-recovery.md),
 [фактические проверки и ограничения](docs/sprint-6a-validation.md).
-Relay V1 требует одного Core worker; Module SDK/DB/secrets и Sprint 6B не реализуются.
+Relay V1 требует одного Core worker. Описание ниже фиксирует контекст Sprint 6A;
+SQLite SDK/storage добавлены в 6B, полноценный Secret Manager и module PostgreSQL отложены.
 
 Sprint 4D добавляет [изолированный OCI runtime](docs/module-runtime.md), отдельный
 [Deployment Agent](docs/deployment-agent.md), signed offline artifacts, approved lifecycle,

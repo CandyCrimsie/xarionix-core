@@ -7,6 +7,7 @@ RUN python -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir -r requ
 COPY pyproject.toml ./
 COPY app ./app
 COPY scripts ./scripts
+COPY sdk/python/src/xarionix_sdk ./sdk/python/src/xarionix_sdk
 RUN /opt/venv/bin/pip install --no-deps . && /opt/venv/bin/python -m pip uninstall --yes pip
 
 FROM ${PYTHON_IMAGE} AS base-runtime

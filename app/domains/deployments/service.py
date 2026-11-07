@@ -22,6 +22,7 @@ from app.domains.identity.model import Identity
 from app.domains.installations import service as installations
 from app.domains.installations.model import ModuleInstallation
 from app.domains.installations.policy import policy
+from app.domains.module_sdk import service as storage_service
 from app.domains.modules.authorization import MachineContext
 from app.domains.packages.model import (
     ModulePackage,
@@ -154,13 +155,13 @@ async def snapshot(ctx: Context, payload: PlanCreate, runtime: dict[str, Any]) -
     if current and payload.operation == "provision" and current.desired != "absent":
         fail(409, "deployment_already_provisioned")
     package = await installations.package(
-        ctx, current.package_id if current and payload.operation in SAFETY else value.package_id
+        ctx, current.package_id if current and payload.operation in {*SAFETY, "backup"} else value.package_id
     )
     if runtime["platform"] != target_host.platform:
         fail(409, "deployment_platform_incompatible")
     api_metadata: dict[str, Any] = {}
     selected_profile = current.profile if current and payload.operation in SAFETY else payload.profile
-    if selected_profile == "module-api-private-v1":
+    if selected_profile in {"module-api-private-v1", "module-api-stateful-v1"}:
         from app.domains.module_gateway.model import ModuleAPIContract
 
         api = await ctx.session.get(ModuleAPIContract, package.id)
@@ -180,7 +181,7 @@ async def snapshot(ctx: Context, payload: PlanCreate, runtime: dict[str, Any]) -
     if (
         current
         and current.package_id != package.id
-        and payload.operation not in {"upgrade", "rollback", *SAFETY}
+        and payload.operation not in {"upgrade", "rollback", "restore", *SAFETY}
     ):
         fail(409, "deployment_upgrade_required")
     if (
@@ -189,7 +190,9 @@ async def snapshot(ctx: Context, payload: PlanCreate, runtime: dict[str, Any]) -
         and current.observed not in {"stopped", "not_provisioned"}
     ):
         fail(409, "deployment_stop_before_deprovision")
+    storage_metadata = await storage_service.snapshot(ctx, payload, value, package, current, selected_profile)
     return {
+        **storage_metadata,
         **api_metadata,
         "schema_version": 1,
         "installation_id": str(value.id),
@@ -293,6 +296,8 @@ async def queue(ctx: Context, plan: DeploymentPlan, expected_digest: str) -> Dep
         profile=body["profile"],
         expected_installation_generation=body["installation_generation"],
         expected_deployment_generation=body["expected_deployment_generation"],
+        backup_id=body.get("storage", {}).get("backup_id") if body["operation"] != "backup" else None,
+        allow_migration=body.get("storage", {}).get("allow_migration", False),
     )
     if await snapshot(ctx, payload, body["runtime"]) != body:
         fail(409, "deployment_plan_stale")
@@ -328,12 +333,15 @@ async def queue(ctx: Context, plan: DeploymentPlan, expected_digest: str) -> Dep
         "acr": ctx.claims["acr"],
         "auth_time": ctx.claims["auth_time"],
     }
+    await storage_service.reserve(ctx, body)
     desired = {
         "provision": "provisioned",
         "stop": "stopped",
         "deprovision": "absent",
         "quarantine": "quarantined",
         "retire": "retired",
+        "backup": "stopped",
+        "restore": "stopped",
     }.get(body["operation"], "running")
     current = await ctx.session.get(RuntimeDeployment, plan.installation_id)
     if current and body["operation"] == "inspect":
@@ -411,7 +419,7 @@ async def authorize(
             or not package
             or installation.status == "removed"
             or installation.generation != job.body["installation_generation"]
-            or installation.package_id != package.id
+            or (job.operation != "backup" and installation.package_id != package.id)
             or not await trusted(ctx.session, package)
             or (await ctx.session.get(ModuleRetirement, job.installation_id)) is not None
         ):
@@ -481,6 +489,14 @@ async def check_in(ctx: MachineContext, value: DeploymentHost, payload: CheckIn)
         deliveries.append(
             {
                 **({"api_contract": job.body["api_contract"]} if "api_contract" in job.body else {}),
+                **(
+                    {
+                        "storage": job.body["storage"],
+                        "installation_generation": job.body["installation_generation"],
+                    }
+                    if "storage" in job.body
+                    else {}
+                ),
                 "id": job.id,
                 "fence": job.fence,
                 "host_id": value.id,
@@ -582,7 +598,7 @@ async def security_stop(
     await ctx.session.flush()
     runtime.generation += 1
     runtime.desired, runtime.health = terminal, "unknown"
-    body = dict(source)
+    body = await storage_service.safety_binding(ctx, dict(source), runtime.installation_id)
     body["operation"] = "retire" if terminal == "retired" else "quarantine"
     ctx.session.add(
         DeploymentJob(
@@ -662,13 +678,17 @@ async def acknowledge(
             and report.container_id is not None
         ):
             fail(409, "deployment_readiness_required")
-        if job.operation in {"provision", "stop", "quarantine", "retire"} and report.state != "stopped":
+        if (
+            job.operation in {"provision", "stop", "quarantine", "retire", "backup", "restore"}
+            and report.state != "stopped"
+        ):
             fail(409, "deployment_stopped_state_required")
         if job.operation == "deprovision" and report.state != "not_provisioned":
             fail(409, "deployment_absent_state_required")
     runtime = await ctx.session.get(RuntimeDeployment, job.installation_id)
     if runtime is None:
         fail(409, "deployment_runtime_missing")
+    await storage_service.acknowledge(ctx, job, report.storage, payload.success)
     apply_report(runtime, report)
     job.state, job.result = "succeeded" if payload.success else "failed", payload.model_dump(mode="json")
     await ctx.session.flush()

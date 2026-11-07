@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "module": {
+    "id": "hello-business",
+    "name": "Пример бизнес-модуля",
+    "version": "1.1.0",
+    "type": "standard",
+    "description": "Постоянные записи компаний в изолированном SQLite storage"
+  },
+  "publisher": {
+    "id": "example-runtime"
+  },
+  "compatibility": {
+    "core": ">=0.1.0 <1.0.0",
+    "module_protocol": 1
+  },
+  "permissions": {
+    "namespace": "hello",
+    "definitions": [
+      {
+        "key": "hello.status.read",
+        "description": "Проверка бизнес-модуля",
+        "scope": "company"
+      },
+      {
+        "key": "hello.items.read",
+        "description": "Чтение записей примера",
+        "scope": "company"
+      },
+      {
+        "key": "hello.items.create",
+        "description": "Создание записей примера",
+        "scope": "company"
+      }
+    ]
+  },
+  "dependencies": [],
+  "artifacts": []
+}

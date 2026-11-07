@@ -34,6 +34,17 @@ Claims = Annotated[dict[str, Any], Depends(verified_claims)]
 transaction = asynccontextmanager(context)
 
 
+@router.get("/packages/{package_id}/sdk")
+async def sdk_detail(package_id: UUID, ctx: Ctx) -> dict[str, Any]:
+    from app.domains.module_sdk.model import ModuleSDKContract
+
+    await require_platform(ctx, serialize=False)
+    if await ctx.session.get(ModulePackage, package_id) is None:
+        fail(404, "package_not_found")
+    value = await ctx.session.get(ModuleSDKContract, package_id)
+    return {"sdk": value.document if value else None, "sha256": value.sha256 if value else None}
+
+
 async def live_claims(request: Request) -> dict[str, Any]:
     # JWT expiry, signature/issuer and purpose are checked AGAIN after potentially long processing.
     return await verified_claims(request, await bearer(request))

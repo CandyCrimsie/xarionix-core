@@ -19,10 +19,14 @@ dev = ["pytest>=8.4,<10", "pytest-asyncio>=1.2,<2", "pytest-cov>=7.1,<8", "ruff>
 [tool.hatch.build.targets.wheel]
 packages = ["app", "scripts"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"sdk/python/src/xarionix_sdk" = "xarionix_sdk"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+pythonpath = ["sdk/python/src"]
 markers = ["integration: requires real PostgreSQL / managed Keycloak", "runtime: requires a dedicated native rootless Linux engine with delegated resource controls"]
 
 [tool.ruff]

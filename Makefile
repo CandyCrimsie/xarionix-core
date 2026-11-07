@@ -1,7 +1,7 @@
 .PHONY: install-dev validate lint typecheck test security check compose-check dev-config dev-up dev-down dev-status dev-logs dev-test integration-test locking-benchmark docker-build docker-scan
 .PHONY: package-benchmark
 .PHONY: deployment-agent-build runtime-example-build runtime-test runtime-integration-test runtime-images-check
-.PHONY: gateway-agent-build gateway-test gateway-integration-test
+.PHONY: gateway-agent-build gateway-test gateway-integration-test sdk-test stateful-integration-test
 PYTHON ?= python3
 IMAGE ?= xarionix-core:local
 DEV_COMPOSE = docker compose --env-file .env.dev -f compose.dev.yaml
@@ -12,16 +12,16 @@ install-dev:
 validate:
 	.venv/bin/python -m scripts.validate
 lint:
-	.venv/bin/ruff check app scripts tests migrations
-	.venv/bin/ruff format --check app scripts tests migrations
+	.venv/bin/ruff check app scripts tests migrations sdk/python/src
+	.venv/bin/ruff format --check app scripts tests migrations sdk/python/src
 	bash -n install.sh
 	sh -n deploy/postgres/10-app-user.sh
 typecheck:
-	.venv/bin/mypy app scripts migrations
+	.venv/bin/mypy app scripts migrations sdk/python/src
 test:
-	.venv/bin/python -m pytest -vv -m "not integration" --junitxml=reports/unit.xml --cov=app --cov=scripts --cov-report=term-missing --cov-report=xml:reports/coverage.xml --cov-fail-under=70
+	.venv/bin/python -m pytest -vv -m "not integration" --junitxml=reports/unit.xml --cov=app --cov=scripts --cov=xarionix_sdk --cov-report=term-missing --cov-report=xml:reports/coverage.xml --cov-fail-under=70
 security:
-	.venv/bin/bandit -q -r app scripts
+	.venv/bin/bandit -q -r app scripts sdk/python/src
 	.venv/bin/pip-audit -r requirements.lock --strict --timeout 60 --progress-spinner off
 	.venv/bin/pip-audit -r requirements-dev.lock --strict --timeout 60 --progress-spinner off
 check: validate lint typecheck test security compose-check
@@ -70,3 +70,8 @@ gateway-test:
 gateway-integration-test:
 	@test -n "$(XARIONIX_RUNTIME_ENGINE_SOCKET)" || { echo "Set the dedicated native rootless runtime socket"; exit 1; }
 	XARIONIX_RUN_DOCKER_TESTS=1 XARIONIX_RUN_GATEWAY_TESTS=1 .venv/bin/python -m pytest tests/integration/test_module_gateway_e2e.py -vv --junitxml=reports/gateway-e2e.xml
+sdk-test:
+	.venv/bin/python -m pytest tests/test_module_sdk.py tests/test_module_configuration.py tests/test_module_storage_sdk.py tests/test_module_storage_plans.py tests/test_stateful_storage_agent.py -vv
+stateful-integration-test:
+	@test -n "$(XARIONIX_RUNTIME_ENGINE_SOCKET)" || { echo "Set the dedicated native rootless runtime socket"; exit 1; }
+	XARIONIX_RUN_DOCKER_TESTS=1 XARIONIX_RUN_STATEFUL_TESTS=1 .venv/bin/python -m pytest tests/integration/test_stateful_runtime_e2e.py -vv --junitxml=reports/stateful-e2e.xml

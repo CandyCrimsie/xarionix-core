@@ -13,6 +13,7 @@ import httpx
 from app.domains.deployments.artifacts import write_oci_archive
 from app.domains.deployments.contracts import SAFETY, Delivery, RuntimeReport
 from app.domains.module_gateway.contracts import read_contract
+from app.domains.module_sdk.contracts import SDKContract
 from app.domains.packages.archive import verify
 from app.domains.packages.codec import PackageError
 from app.domains.packages.schema import TrustStore
@@ -25,6 +26,7 @@ from scripts.module_agent import backoff
 class DeploymentAgent:
     def __init__(self, protocol: Protocol, engine: Engine, state: State):
         self.protocol, self.engine, self.state = protocol, engine, state
+        self.engine.storage_root = state.root
 
     def authorize(self, job: Delivery) -> None:
         self.protocol.request("/jobs/" + str(job.id) + "/authorize", {"fence": str(job.fence)})
@@ -72,8 +74,26 @@ class DeploymentAgent:
         if contract != job.runtime:
             raise PackageError("deployment_runtime_binding_changed")
         api = read_contract(package, checked.manifest)
-        if job.profile == "module-api-private-v1" and (api is None or api != job.api_contract):
+        if job.profile in {"module-api-private-v1", "module-api-stateful-v1"} and (
+            api is None or api != job.api_contract
+        ):
             raise PackageError("deployment_api_binding_changed")
+        if job.profile == "module-api-stateful-v1":
+            sdk = (
+                SDKContract.model_validate(checked.sdk_contract) if checked.sdk_contract is not None else None
+            )
+            if (
+                sdk is None
+                or sdk.storage is None
+                or job.storage is None
+                or sdk.digest() != job.storage.sdk_sha256
+                or sdk.module_id != job.storage.module_id
+                or sdk.package_version != job.storage.package_version
+                or sdk.storage.data_schema_version != job.storage.target_schema_version
+                or sdk.storage.compatible_minimum != job.storage.compatible_minimum
+                or sdk.storage.compatible_maximum != job.storage.compatible_maximum
+            ):
+                raise PackageError("deployment_storage_binding_changed")
         return archive
 
     def execute(self, job: Delivery) -> None:

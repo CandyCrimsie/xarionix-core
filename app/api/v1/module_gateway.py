@@ -31,6 +31,27 @@ class IdentityCreate(Frame):
 
 class IdentityStatus(Frame):
     status: Literal["active", "disabled", "revoked"]
+    expected_revision: int | None = Field(default=None, ge=1, strict=True)
+
+
+@router.get("/platform/deployment-hosts/{host_id}/gateway-identity")
+async def identity_detail(host_id: UUID, ctx: Ctx) -> dict[str, Any]:
+    await require_platform(ctx, serialize=False)
+    if await ctx.session.get(DeploymentHost, host_id) is None:
+        fail(404, "deployment_host_not_found")
+    value = await ctx.session.get(GatewayIdentity, host_id)
+    return {
+        "host_id": host_id,
+        "identity": {
+            "issuer": value.issuer,
+            "subject": value.subject,
+            "client_id": value.client_id,
+            "revision": value.revision,
+            "status": value.status,
+        }
+        if value
+        else None,
+    }
 
 
 @router.post("/platform/deployment-hosts/{host_id}/gateway-identity", status_code=201)
@@ -64,6 +85,8 @@ async def identity_status(host_id: UUID, payload: IdentityStatus, ctx: Ctx) -> d
     value = await ctx.session.get(GatewayIdentity, host_id, with_for_update=True)
     if value is None or value.status == "revoked":
         fail(409, "gateway_identity_unavailable")
+    if payload.expected_revision is not None and payload.expected_revision != value.revision:
+        fail(409, "gateway_identity_revision_conflict")
     value.status, value.revision = payload.status, value.revision + 1
     audit(ctx, "gateway.identity_status_changed", "deployment_host", host_id, status=value.status)
     return {"host_id": host_id, "revision": value.revision, "status": value.status}

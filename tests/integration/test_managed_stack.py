@@ -531,7 +531,7 @@ def test_real_managed_keycloak_token_me_and_postgres_identity(stack):
         ).fetchone()
         assert row is not None and row[1] == stack["issuer"]
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0012_module_gateway",
+            "0013_module_storage",
         )
         assert connection.execute(
             "SELECT rolsuper FROM pg_roles WHERE rolname = current_user"

@@ -152,10 +152,39 @@ async def runtime(
                 api = await ctx.session.get(ModuleAPIContract, value.package_id)
                 ready = bool(
                     ready
-                    and deployed.profile == "module-api-private-v1"
+                    and deployed.profile in {"module-api-private-v1", "module-api-stateful-v1"}
                     and api
                     and gateway_identity
                     and gateway_identity.status == "active"
+                )
+            if deployed.profile == "module-api-stateful-v1":
+                from app.domains.module_sdk.model import ModuleSDKContract, ModuleStorageAllocation
+
+                allocation = await ctx.session.get(ModuleStorageAllocation, value.id)
+                sdk = await ctx.session.get(ModuleSDKContract, value.package_id)
+                job = await ctx.session.scalar(
+                    select(DeploymentJob).where(
+                        DeploymentJob.installation_id == value.id,
+                        DeploymentJob.generation == deployed.generation,
+                    )
+                )
+                storage = job.body.get("storage", {}) if job else {}
+                observed = (job.result or {}).get("report", {}).get("storage", {}) if job else {}
+                schema = sdk.document.get("storage") if sdk else None
+                ready = bool(
+                    ready
+                    and allocation
+                    and sdk
+                    and schema
+                    and deployed.installation_generation == value.generation
+                    and allocation.host_id == host.id
+                    and storage.get("sdk_sha256") == sdk.sha256
+                    and storage.get("epoch_id") == str(allocation.epoch_id)
+                    and observed.get("epoch_id") == str(allocation.epoch_id)
+                    and observed.get("data_schema_version") == allocation.data_schema_version
+                    and schema["compatible_minimum"]
+                    <= allocation.data_schema_version
+                    <= schema["compatible_maximum"]
                 )
             result.update(
                 {
@@ -403,15 +432,33 @@ async def snapshot(
             }
         )
     from app.domains.module_gateway.model import ModuleAPIContract
+    from app.domains.module_sdk.model import ModuleSDKContract
 
     api_metadata = await ctx.session.get(ModuleAPIContract, target.id)
+    sdk_metadata = await ctx.session.get(ModuleSDKContract, target.id)
+    storage_declaration = sdk_metadata.document.get("storage") if sdk_metadata else None
     return {
+        **(
+            {
+                "module_storage": {
+                    "required_profile": "module-api-stateful-v1",
+                    "declaration": storage_declaration,
+                    "sdk_sha256": sdk_metadata.sha256,
+                    "data_retention": "retained",
+                    "destructive_data_deletion": False,
+                }
+            }
+            if storage_declaration and sdk_metadata
+            else {}
+        ),
         **(
             {
                 "module_api": {
                     "sha256": api_metadata.sha256,
                     "contract": api_metadata.document,
-                    "required_profile": "module-api-private-v1",
+                    "required_profile": "module-api-stateful-v1"
+                    if storage_declaration
+                    else "module-api-private-v1",
                 }
             }
             if api_metadata

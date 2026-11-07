@@ -211,9 +211,13 @@ def _validate_runtime(path: Path, manifest: Manifest) -> RuntimeContract:
                     if decoded is not stream:
                         decoded.close()
         from app.domains.module_gateway.contracts import API_RESOURCE, read_contract
+        from app.domains.module_sdk.contracts import SDK_RESOURCE, read_sdk_contract
 
-        if read_contract(path, manifest) is not None:
+        api = read_contract(path, manifest)
+        if api is not None:
             expected.add(API_RESOURCE)
+        if read_sdk_contract(path, manifest, api) is not None:
+            expected.add(SDK_RESOURCE)
         if set(inventory) != expected:
             raise PackageError("oci_unexpected_artifact")
     return contract

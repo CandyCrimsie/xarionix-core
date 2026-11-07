@@ -147,6 +147,13 @@ async def publish(ctx: Context, verified: Verified) -> tuple[ModulePackage, bool
             ModuleAPIContract(package_id=value.id, sha256=api.digest(), document=api.model_dump())
         )
         await ctx.session.flush()
+    if verified.sdk_contract is not None:
+        from app.domains.module_sdk.contracts import SDKContract
+        from app.domains.module_sdk.model import ModuleSDKContract
+
+        sdk = SDKContract.model_validate(verified.sdk_contract)
+        ctx.session.add(ModuleSDKContract(package_id=value.id, sha256=sdk.digest(), document=sdk.document()))
+        await ctx.session.flush()
     audit(ctx, "package.imported", "module_package", value.id, package_sha256=value.package_sha256)
     return value, True
 

@@ -141,6 +141,36 @@ async def test_plan_binds_exact_package_host_policy_generations_and_new_approval
     assert not any("secret" in key for key in plan.approval)
 
 
+@pytest.mark.parametrize("operation", ["start", "restore"])
+async def test_restore_can_select_compatible_target_image_but_still_requires_storage_validation(
+    context, setup, monkeypatch, operation
+):
+    installation, host, package, contract, objects, payload = setup
+    objects[RuntimeDeployment, installation.id] = RuntimeDeployment(
+        installation_id=installation.id,
+        host_id=host.id,
+        package_id=uuid.uuid4(),
+        generation=1,
+        desired="quarantined",
+        observed="stopped",
+        profile="offline-small-v1",
+    )
+    validator = AsyncMock(
+        side_effect=HTTPException(409, detail={"code": "storage_restore_validation_required"})
+    )
+    monkeypatch.setattr(service.storage_service, "snapshot", validator)
+    with pytest.raises(HTTPException) as error:
+        await service.snapshot(
+            context,
+            payload.model_copy(update={"operation": operation, "expected_deployment_generation": 1}),
+            contract,
+        )
+    assert error.value.detail["code"] == (
+        "storage_restore_validation_required" if operation == "restore" else "deployment_upgrade_required"
+    )
+    assert validator.await_count == (1 if operation == "restore" else 0)
+
+
 @pytest.mark.parametrize(
     "kind",
     [
